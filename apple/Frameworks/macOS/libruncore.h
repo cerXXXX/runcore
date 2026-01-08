@@ -112,6 +112,7 @@ extern void runcore_set_message_status_cb(uint64_t handle, runcore_message_statu
 extern void runcore_set_log_cb(runcore_log_cb cb, void* userData);
 extern void runcore_set_loglevel(int32_t level);
 extern char* runcore_destination_hash_hex(uint64_t handle);
+extern char* runcore_profile_name(uint64_t handle);
 extern int32_t runcore_send(uint64_t handle, char* destHashHex, char* title, char* content);
 extern char* runcore_send_result_json(uint64_t handle, char* destHashHex, char* title, char* content);
 extern int32_t runcore_announce(uint64_t handle);

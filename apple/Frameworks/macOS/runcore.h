@@ -59,6 +59,10 @@ void runcore_set_message_status_cb(runcore_handle_t handle, runcore_message_stat
 // The returned pointer is owned by the library and remains valid until runcore_stop().
 const char* runcore_destination_hash_hex(runcore_handle_t handle);
 
+// Returns the profile display name (aka "me" contact folder) if known.
+// The returned pointer must be freed with runcore_free_string().
+char* runcore_profile_name(runcore_handle_t handle);
+
 // Send a message to `dest_hash_hex` (32 hex chars). Returns 0 on success.
 int32_t runcore_send(runcore_handle_t handle, const char* dest_hash_hex, const char* title, const char* content);
 

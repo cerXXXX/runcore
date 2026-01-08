@@ -17,26 +17,34 @@ func (n *Node) ensureMeContactDir(desiredName string) (string, string, error) {
 		return "", "", errors.New("contacts dir is empty")
 	}
 
-	if strings.TrimSpace(desiredName) == "" {
-		desiredName = "Me"
-	}
-	finalName := sanitizeContactFolderName(desiredName)
-	target := filepath.Join(n.contactsDir, finalName)
-
-	if dir, err := n.findMeContactDir(); err == nil && dir != "" {
-		if filepath.Base(dir) != finalName {
-			_ = os.MkdirAll(filepath.Dir(target), 0o755)
-			_ = os.Rename(dir, target)
-			dir = target
+	currentDir, err := n.findMeContactDir()
+	if err == nil && currentDir != "" {
+		currentName := filepath.Base(currentDir)
+		finalName := sanitizeContactFolderName(currentName)
+		if strings.TrimSpace(desiredName) != "" {
+			finalDesired := sanitizeContactFolderName(desiredName)
+			if finalDesired != finalName {
+				target := filepath.Join(n.contactsDir, finalDesired)
+				_ = os.MkdirAll(filepath.Dir(target), 0o755)
+				_ = os.Rename(currentDir, target)
+				currentDir = target
+				finalName = finalDesired
+			}
 		}
-		n.clearOtherMeTags(target)
-		_ = setXattrTag(target, meTagXattr, []byte("1"))
+		n.clearOtherMeTags(currentDir)
+		_ = setXattrTag(currentDir, meTagXattr, []byte("1"))
 		n.meDirMu.Lock()
-		n.meDir = target
+		n.meDir = currentDir
 		n.meDirMu.Unlock()
-		return target, finalName, nil
+		return currentDir, finalName, nil
 	}
 
+	desired := strings.TrimSpace(desiredName)
+	if desired == "" {
+		desired = "Me"
+	}
+	finalName := sanitizeContactFolderName(desired)
+	target := filepath.Join(n.contactsDir, finalName)
 	if err := os.MkdirAll(target, 0o755); err != nil {
 		return "", "", err
 	}

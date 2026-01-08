@@ -208,6 +208,19 @@ func runcore_stop(handle C.uint64_t) C.int32_t {
 	return 0
 }
 
+//export runcore_profile_name
+func runcore_profile_name(handle C.uint64_t) *C.char {
+	h := getHandle(handle)
+	if h == nil || h.node == nil {
+		return nil
+	}
+	name := h.node.ProfileName()
+	if name == "" {
+		return nil
+	}
+	return allocCString(name)
+}
+
 //export runcore_set_inbound_cb
 func runcore_set_inbound_cb(handle C.uint64_t, cb C.runcore_inbound_cb, userData unsafe.Pointer) {
 	h := getHandle(handle)

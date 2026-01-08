@@ -142,6 +142,11 @@ final class RuncoreEngine {
         guard handle != 0 else { return }
         cachedDestHex = destinationHashHex()
 
+        if let ptr = runcore_profile_name(handle) {
+            displayName = String(cString: ptr)
+            runcore_free_string(ptr)
+        }
+
         runcore_set_inbound_cb(handle, { userData, srcHash, msgID, title, content in
             guard let userData else { return }
             let engine = Unmanaged<RuncoreEngine>.fromOpaque(userData).takeUnretainedValue()

@@ -130,6 +130,8 @@ final class AppStore: ObservableObject {
         }
         engine.start()
         appendLog("engine started (iOS stub)")
+        profileName = engine.displayName
+        save()
         if let avatar = profileAvatarData, !avatar.isEmpty {
             let normalized = normalizeAvatarData(avatar) ?? avatar
             let rc = engine.setAvatarImage(mime: "image/heic", data: normalized)
