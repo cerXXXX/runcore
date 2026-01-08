@@ -8,21 +8,18 @@
 
 - Reticulum+LXMF in a single process (no `rnsd`), `lxmd`-compatible config/storage layout.
 - Announces: sent automatically (periodic + change-driven) and received announces are persisted to `<configdir>/storage/announces.json`.
-- Profile: `display_name` + avatar (set/clear), serve avatar via `/avatar`, best-effort avatar fetch for a contact.
-- Messages: receive via inbound callback, send (opportunistic), outbound status updates via callback.
-- Interfaces: stats (`InterfaceStatsJSON`) + configured interfaces list + enable/disable interface by section name.
+- Profile: lives on disk under `contacts/` (own profile is a folder tagged as `me`; LXMF id is stored in `contacts/<me>/lxmf`; avatar is `avatar.*`).
+- Messages: inbound is written to `messages/<srcHashHex>/…`; outbound is triggered by dropping files into `send/<destHashHex>/…` (with xattr-based status).
+- Interfaces: managed via config; Go handles network side, UI reads/writes files.
 
-### SwiftUI (iOS + Mac Catalyst)
+### Flutter host (iOS + Mac Catalyst)
 
-- Contacts/chats/profile/log are stored in `Documents/Runcore/state.json` (JSON).
-- Outbound pending: if there is no path/identity, the message stays `pending` and the app retries delivery.
-- Message bubbles: text and image attachment rows.
-- Image attachments: rounded corners + subtle border, tap to view fullscreen (pinch-to-zoom + pan).
-- Copy support: long-press context menu to copy message text; copy image puts the original attachment bytes on the pasteboard (for pasting elsewhere).
-- Diagnostics screen: logs, interfaces, view/edit `config` and `rns/config`, announces list.
-- Blocklist: inbound from blocked destination hashes are dropped at the UI level.
+- Flutter app lives in `flutter/` (Dart UI).
+- iOS host app is `flutter/ios/Runner` and links `Runcore.xcframework` from `flutter/native/apple/Frameworks/iOS`.
+- Legacy SwiftUI app project remains under `flutter/native/apple/App/iOS/Runcore.xcodeproj` (kept for reference).
 
 ## Screenshots
+Screenshots below are from the legacy SwiftUI app; Flutter UI will differ.
 
 | Chat with images | Add new contact |
 | --- | --- |

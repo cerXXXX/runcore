@@ -12,7 +12,6 @@ static inline void runcore_log_cb_call(runcore_log_cb cb, void* user_data, int32
 import "C"
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"

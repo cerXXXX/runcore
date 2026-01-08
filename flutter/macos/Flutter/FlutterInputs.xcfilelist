@@ -1,0 +1,2 @@
+$(SRCROOT)/Flutter/ephemeral/flutter_export_environment.sh
+$(SRCROOT)/Flutter/ephemeral/Flutter-Generated.xcconfig

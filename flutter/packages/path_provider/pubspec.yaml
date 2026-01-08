@@ -1,0 +1,12 @@
+name: path_provider
+description: "Stub path_provider implementation for runcore_app (no native plugin)."
+version: 2.1.5
+publish_to: 'none'
+
+environment:
+  sdk: ^3.10.4
+
+dependencies:
+  flutter:
+    sdk: flutter
+

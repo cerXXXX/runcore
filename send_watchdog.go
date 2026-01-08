@@ -169,7 +169,6 @@ func (n *Node) processSendFolder(destHashHex, dir string) {
 			break
 		}
 	}
-	var attachPath string
 	attachPaths := make([]string, 0, len(paths))
 	for _, p := range paths {
 		if strings.EqualFold(filepath.Ext(p), ".txt") {
