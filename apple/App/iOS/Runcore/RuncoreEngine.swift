@@ -123,9 +123,6 @@ final class RuncoreEngine {
         try? fm.createDirectory(atPath: contactsDir, withIntermediateDirectories: true)
         try? fm.createDirectory(atPath: lxmfDir, withIntermediateDirectories: true)
         try? fm.createDirectory(atPath: sendDir, withIntermediateDirectories: true)
-        try? "{}\n".data(using: .utf8)?.write(to: URL(fileURLWithPath: (contactsDir as NSString).appendingPathComponent("test.json")), options: .atomic)
-        try? "{}\n".data(using: .utf8)?.write(to: URL(fileURLWithPath: (lxmfDir as NSString).appendingPathComponent("test.json")), options: .atomic)
-        try? "{}\n".data(using: .utf8)?.write(to: URL(fileURLWithPath: (sendDir as NSString).appendingPathComponent("test.json")), options: .atomic)
 
         // Tell Go where to keep configs/state (system folder) without changing the FFI signature.
         let cfg = systemConfigDir()

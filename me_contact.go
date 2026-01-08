@@ -9,41 +9,43 @@ import (
 
 const meTagXattr = "user.runcore.me"
 
-func (n *Node) ensureMeContactDir() (string, error) {
+func (n *Node) ensureMeContactDir(desiredName string) (string, string, error) {
 	if n == nil {
-		return "", errors.New("node not started")
+		return "", "", errors.New("node not started")
 	}
 	if strings.TrimSpace(n.contactsDir) == "" {
-		return "", errors.New("contacts dir is empty")
+		return "", "", errors.New("contacts dir is empty")
 	}
 
-	name := sanitizeContactFolderName(n.displayName)
-	dir := filepath.Join(n.contactsDir, name)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
+	if strings.TrimSpace(desiredName) == "" {
+		desiredName = "Me"
+	}
+	finalName := sanitizeContactFolderName(desiredName)
+	target := filepath.Join(n.contactsDir, finalName)
+
+	if dir, err := n.findMeContactDir(); err == nil && dir != "" {
+		if filepath.Base(dir) != finalName {
+			_ = os.MkdirAll(filepath.Dir(target), 0o755)
+			_ = os.Rename(dir, target)
+			dir = target
+		}
+		n.clearOtherMeTags(target)
+		_ = setXattrTag(target, meTagXattr, []byte("1"))
+		n.meDirMu.Lock()
+		n.meDir = target
+		n.meDirMu.Unlock()
+		return target, finalName, nil
 	}
 
-	// Ensure uniqueness: clear tag from other folders.
-	entries, _ := os.ReadDir(n.contactsDir)
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		if e.Name() == name {
-			continue
-		}
-		p := filepath.Join(n.contactsDir, e.Name())
-		if hasXattrTag(p, meTagXattr) {
-			_ = clearXattrTag(p, meTagXattr)
-		}
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		return "", "", err
 	}
-
-	_ = setXattrTag(dir, meTagXattr, []byte("1"))
-
+	n.clearOtherMeTags(target)
+	_ = setXattrTag(target, meTagXattr, []byte("1"))
 	n.meDirMu.Lock()
-	n.meDir = dir
+	n.meDir = target
 	n.meDirMu.Unlock()
-	return dir, nil
+	return target, finalName, nil
 }
 
 func (n *Node) findMeContactDir() (string, error) {
@@ -53,7 +55,7 @@ func (n *Node) findMeContactDir() (string, error) {
 	n.meDirMu.RLock()
 	cached := n.meDir
 	n.meDirMu.RUnlock()
-	if cached != "" {
+	if cached != "" && hasXattrTag(cached, meTagXattr) {
 		return cached, nil
 	}
 	if strings.TrimSpace(n.contactsDir) == "" {
@@ -79,6 +81,22 @@ func (n *Node) findMeContactDir() (string, error) {
 	return "", os.ErrNotExist
 }
 
+func (n *Node) clearOtherMeTags(skip string) {
+	entries, _ := os.ReadDir(n.contactsDir)
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		p := filepath.Join(n.contactsDir, e.Name())
+		if p == skip {
+			continue
+		}
+		if hasXattrTag(p, meTagXattr) {
+			_ = clearXattrTag(p, meTagXattr)
+		}
+	}
+}
+
 func sanitizeContactFolderName(name string) string {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -96,4 +114,3 @@ func sanitizeContactFolderName(name string) string {
 	}
 	return name
 }
-

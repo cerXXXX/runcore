@@ -67,9 +67,9 @@ type Node struct {
 	reticulum *rns.Reticulum
 	identity  *rns.Identity
 
-	storageDir string
+	storageDir  string
 	contactsDir string
-	sendDir    string
+	sendDir     string
 	meDirMu     sync.RWMutex
 	meDir       string
 
@@ -185,7 +185,17 @@ func Start(opts Options) (*Node, error) {
 	n.contactsDir = n.opts.ContactsDir
 	_ = os.MkdirAll(n.contactsDir, 0o755)
 	rns.Logf(rns.LOG_NOTICE, "runcore: contacts dir=%q", n.contactsDir)
-	_, _ = n.ensureMeContactDir()
+	if strings.TrimSpace(n.displayName) == "" {
+		n.displayName = "Me"
+	}
+	if dir, finalName, err := n.ensureMeContactDir(n.displayName); err == nil {
+		n.displayName = finalName
+		if dir != "" {
+			n.meDirMu.Lock()
+			n.meDir = dir
+			n.meDirMu.Unlock()
+		}
+	}
 
 	n.sendDir = strings.TrimSpace(n.opts.SendDir)
 
@@ -931,16 +941,21 @@ func (n *Node) startPeriodicAnnounce(interval time.Duration) {
 	}()
 }
 
-// SetDisplayName updates LXMF announce app-data (display_name) for this node.
-// Call AnnounceDelivery() after setting to broadcast changes.
+// SetDisplayName renames the "me" contact folder and updates the profile name.
 func (n *Node) SetDisplayName(name string) error {
 	if n == nil || n.deliveryDestIn == nil {
 		return errors.New("node not started")
 	}
-	n.displayName = name
-	// Keep on-disk config in sync with the profile name for UI/diagnostics.
-	_ = UpdateLXMFDisplayName(n.opts.Dir, name)
-	_, _ = n.ensureMeContactDir()
+	dir, finalName, err := n.ensureMeContactDir(name)
+	if err != nil {
+		return err
+	}
+	n.displayName = finalName
+	if dir != "" {
+		n.meDirMu.Lock()
+		n.meDir = dir
+		n.meDirMu.Unlock()
+	}
 	return nil
 }
 
@@ -973,7 +988,6 @@ func (n *Node) SetAvatarImage(mime string, data []byte) error {
 	n.avatarMime = mime
 	return n.saveAvatarToDisk()
 }
-
 
 func (n *Node) ClearAvatar() error {
 	if n == nil {
@@ -1096,7 +1110,10 @@ func (n *Node) avatarStoreDir() string {
 	if dir, err := n.findMeContactDir(); err == nil && dir != "" {
 		return dir
 	}
-	if dir, err := n.ensureMeContactDir(); err == nil && dir != "" {
+	if dir, final, err := n.ensureMeContactDir(n.displayName); err == nil && dir != "" {
+		if final != "" {
+			n.displayName = final
+		}
 		return dir
 	}
 	return n.opts.Dir
