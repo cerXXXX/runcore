@@ -15,6 +15,7 @@
 .cache
 *derive*
 .DS_Store
+.xcframework
 
 
 # Test binary, built with `go test -c`

@@ -57,18 +57,20 @@ build_ios_xcframework() {
   )
   # We provide our own stable public header (runcore.h). Keep headers dir clean (no .DS_Store).
   HEADER_SRC=""
-  if [ -f "$OUTROOT/macOS/runcore.h" ]; then
+  if [ -f "$ROOT/apple/Frameworks/iOS/runcore.h" ]; then
+    HEADER_SRC="$ROOT/apple/Frameworks/iOS/runcore.h"
+  elif [ -f "$OUTROOT/macOS/runcore.h" ]; then
     HEADER_SRC="$OUTROOT/macOS/runcore.h"
   elif [ -f "$OUTROOT/iOS/runcore.h" ]; then
     HEADER_SRC="$OUTROOT/iOS/runcore.h"
-  elif [ -f "$ROOT/apple/Frameworks/iOS/runcore.h" ]; then
-    HEADER_SRC="$ROOT/apple/Frameworks/iOS/runcore.h"
   else
     echo "runcore.h not found" >&2
     exit 1
   fi
   cp "$HEADER_SRC" "$TMP/headers/runcore.h"
-  cp "$HEADER_SRC" "$IOS_OUTDIR/runcore.h"
+  if [ "$HEADER_SRC" != "$IOS_OUTDIR/runcore.h" ]; then
+    cp "$HEADER_SRC" "$IOS_OUTDIR/runcore.h"
+  fi
 
   echo "Building iOS (simulator arm64) libruncore.a..."
   (

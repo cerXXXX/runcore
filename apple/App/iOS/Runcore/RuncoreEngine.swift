@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 final class RuncoreEngine {
     private var handle: runcore_handle_t = 0
@@ -114,10 +115,31 @@ final class RuncoreEngine {
             }
         }, Unmanaged.passUnretained(self).toOpaque())
 
-        let dir = configDir()
-        dir.withCString { cDir in
-            displayName.withCString { cName in
-                handle = runcore_start(cDir, cName, logLevel, 0)
+        let root = iCloudRootDir()
+        let contactsDir = (root as NSString).appendingPathComponent("contacts")
+        let lxmfDir = (root as NSString).appendingPathComponent("lxmf")
+        let sendDir = (root as NSString).appendingPathComponent("send")
+        let fm = FileManager.default
+        try? fm.createDirectory(atPath: contactsDir, withIntermediateDirectories: true)
+        try? fm.createDirectory(atPath: lxmfDir, withIntermediateDirectories: true)
+        try? fm.createDirectory(atPath: sendDir, withIntermediateDirectories: true)
+        try? "{}\n".data(using: .utf8)?.write(to: URL(fileURLWithPath: (contactsDir as NSString).appendingPathComponent("test.json")), options: .atomic)
+        try? "{}\n".data(using: .utf8)?.write(to: URL(fileURLWithPath: (lxmfDir as NSString).appendingPathComponent("test.json")), options: .atomic)
+        try? "{}\n".data(using: .utf8)?.write(to: URL(fileURLWithPath: (sendDir as NSString).appendingPathComponent("test.json")), options: .atomic)
+
+        // Tell Go where to keep configs/state (system folder) without changing the FFI signature.
+        let cfg = systemConfigDir()
+        cfg.withCString { cCfg in
+            _ = setenv("RUNCORE_DIR", cCfg, 1)
+        }
+
+        contactsDir.withCString { cContacts in
+            lxmfDir.withCString { cLXMF in
+                sendDir.withCString { cSend in
+                    displayName.withCString { cName in
+                        handle = runcore_start(cContacts, cLXMF, cSend, cName, logLevel, 0)
+                    }
+                }
             }
         }
         guard handle != 0 else { return }
@@ -357,11 +379,23 @@ func setAvatarPNG(_ data: Data) -> Int32 {
         cachedDestHex = destinationHashHex()
     }
 
-    private func configDir() -> String {
+    private func systemConfigDir() -> String {
         let fm = FileManager.default
         let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let dir = appSupport.appendingPathComponent("Runcore", isDirectory: true)
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.path
+    }
+
+    private func iCloudRootDir() -> String {
+        let fm = FileManager.default
+        if let base = fm.url(forUbiquityContainerIdentifier: "iCloud.ru.at.runcore") ?? fm.url(forUbiquityContainerIdentifier: nil) {
+            let docs = base.appendingPathComponent("Documents", isDirectory: true)
+            try? fm.createDirectory(at: docs, withIntermediateDirectories: true)
+            return docs.path
+        }
+
+        // Fallback (no iCloud): keep everything under Application Support.
+        return systemConfigDir()
     }
 }

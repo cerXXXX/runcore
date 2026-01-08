@@ -23,6 +23,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -86,8 +88,19 @@ func runcore_default_rns_config(loglevel C.int32_t) *C.char {
 }
 
 //export runcore_start
-func runcore_start(configDir *C.char, displayName *C.char, loglevel C.int32_t, resetLXMF C.int32_t) C.uint64_t {
-	dir := C.GoString(configDir)
+func runcore_start(contactsDir *C.char, lxmfDir *C.char, sendDir *C.char, displayName *C.char, loglevel C.int32_t, resetLXMF C.int32_t) C.uint64_t {
+	contacts := ""
+	if contactsDir != nil {
+		contacts = C.GoString(contactsDir)
+	}
+	dir := ""
+	if lxmfDir != nil {
+		dir = C.GoString(lxmfDir)
+	}
+	send := ""
+	if sendDir != nil {
+		send = C.GoString(sendDir)
+	}
 	name := ""
 	if displayName != nil {
 		name = C.GoString(displayName)
@@ -95,8 +108,14 @@ func runcore_start(configDir *C.char, displayName *C.char, loglevel C.int32_t, r
 	level := int(loglevel)
 	reset := resetLXMF != 0
 
+	checkDirReadableWritable(contacts)
+	checkDirReadableWritable(dir)
+	checkDirReadableWritable(send)
+
 	n, err := runcore.Start(runcore.Options{
-		Dir:            dir,
+		Dir:            "",
+		ContactsDir:    contacts,
+		SendDir:        send,
 		DisplayName:    name,
 		LogLevel:       level,
 		ResetLXMFState: reset,
@@ -142,6 +161,27 @@ func runcore_start(configDir *C.char, displayName *C.char, loglevel C.int32_t, r
 	nodesMu.Unlock()
 
 	return C.uint64_t(id)
+}
+
+func checkDirReadableWritable(dir string) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return
+	}
+
+	p := filepath.Join(dir, ".rwcheck")
+	want := []byte("ok")
+	if err := os.WriteFile(p, want, 0o644); err != nil {
+		return
+	}
+	got, err := os.ReadFile(p)
+	_ = os.Remove(p)
+	if err != nil {
+		return
+	}
+	if string(got) != string(want) {
+		return
+	}
 }
 
 func getHandle(id C.uint64_t) *nodeHandle {

@@ -39,12 +39,14 @@ void runcore_set_log_cb(runcore_log_cb cb, void* user_data);
 void runcore_set_loglevel(int32_t level);
 
 // Start Reticulum+LXMF node.
-// - config_dir: directory for identity + LXMF storage + generated rns config
+// - contacts_dir: directory for contacts storage (iCloud Drive)
+// - lxmf_dir: directory reserved for future message/file storage in iCloud Drive
+// - send_dir: directory watched for outbound payloads (iCloud Drive; reserved for future use)
 // - display_name: optional (may be NULL/empty); used in announce metadata
 // - loglevel: Reticulum log level 0..7
 // - reset_lxmf_state: if non-zero, remove ratchets before start
 // Returns 0 on failure.
-runcore_handle_t runcore_start(const char* config_dir, const char* display_name, int32_t loglevel, int32_t reset_lxmf_state);
+runcore_handle_t runcore_start(const char* contacts_dir, const char* lxmf_dir, const char* send_dir, const char* display_name, int32_t loglevel, int32_t reset_lxmf_state);
 
 // Persist state and stop (best-effort). Returns 0 on success.
 int32_t runcore_stop(runcore_handle_t handle);

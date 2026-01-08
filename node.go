@@ -33,6 +33,14 @@ type Options struct {
 	// If empty, defaults to "./.runcore".
 	Dir string
 
+	// ContactsDir is a directory for contacts-related app data.
+	// If empty, defaults to "<Dir>/contacts".
+	ContactsDir string
+
+	// SendDir is a directory reserved for outbound "send folder" workflows.
+	// If empty, runcore does not use it.
+	SendDir string
+
 	// DisplayName is embedded into LXMF announce metadata (optional).
 	DisplayName string
 
@@ -60,6 +68,10 @@ type Node struct {
 	identity  *rns.Identity
 
 	storageDir string
+	contactsDir string
+	sendDir    string
+	meDirMu     sync.RWMutex
+	meDir       string
 
 	router          *lxmf.LXMRouter
 	deliveryDestIn  *rns.Destination
@@ -88,7 +100,11 @@ type Node struct {
 
 func Start(opts Options) (*Node, error) {
 	if opts.Dir == "" {
-		opts.Dir = ".runcore"
+		if d, err := DefaultRootDir("runcore"); err == nil && d != "" {
+			opts.Dir = d
+		} else {
+			opts.Dir = ".runcore"
+		}
 	}
 	if opts.LogLevel == 0 {
 		opts.LogLevel = 4
@@ -162,6 +178,16 @@ func Start(opts Options) (*Node, error) {
 		announces:      make(map[string]AnnounceEntry),
 		ifaceOfflineAt: make(map[string]time.Time),
 	}
+
+	if n.opts.ContactsDir == "" {
+		n.opts.ContactsDir = filepath.Join(n.opts.Dir, "contacts")
+	}
+	n.contactsDir = n.opts.ContactsDir
+	_ = os.MkdirAll(n.contactsDir, 0o755)
+	rns.Logf(rns.LOG_NOTICE, "runcore: contacts dir=%q", n.contactsDir)
+	_, _ = n.ensureMeContactDir()
+
+	n.sendDir = strings.TrimSpace(n.opts.SendDir)
 
 	// Load optional avatar from disk (app-managed).
 	_ = n.loadAvatarFromDisk()
@@ -914,6 +940,7 @@ func (n *Node) SetDisplayName(name string) error {
 	n.displayName = name
 	// Keep on-disk config in sync with the profile name for UI/diagnostics.
 	_ = UpdateLXMFDisplayName(n.opts.Dir, name)
+	_, _ = n.ensureMeContactDir()
 	return nil
 }
 
@@ -956,8 +983,9 @@ func (n *Node) ClearAvatar() error {
 	n.avatarHash = nil
 	n.avatarMTime = 0
 	n.avatarMime = ""
-	_ = os.Remove(n.avatarPath())
-	_ = os.Remove(n.avatarMimePath())
+	for _, p := range n.avatarAllPaths() {
+		_ = os.Remove(p)
+	}
 	return nil
 }
 
@@ -994,34 +1022,58 @@ func (n *Node) announceAppData() []byte {
 }
 
 func (n *Node) avatarPath() string {
-	return filepath.Join(n.opts.Dir, "avatar.bin")
+	ext := avatarExtForMime(n.avatarMime)
+	return filepath.Join(n.avatarStoreDir(), "avatar"+ext)
 }
 
-func (n *Node) avatarMimePath() string {
-	return filepath.Join(n.opts.Dir, "avatar.mime")
+func (n *Node) avatarAllPaths() []string {
+	base := n.avatarStoreDir()
+	return []string{
+		filepath.Join(base, "avatar.png"),
+		filepath.Join(base, "avatar.jpg"),
+		filepath.Join(base, "avatar.jpeg"),
+		filepath.Join(base, "avatar.heic"),
+		// Legacy formats:
+		filepath.Join(base, "avatar.bin"),
+	}
 }
 
 func (n *Node) loadAvatarFromDisk() error {
-	path := n.avatarPath()
-	b, err := os.ReadFile(path)
-	if err != nil {
-		legacy := filepath.Join(n.opts.Dir, "avatar.png")
-		if lb, lerr := os.ReadFile(legacy); lerr == nil {
-			b = lb
-			path = legacy
-		} else {
-			return err
+	base := n.avatarStoreDir()
+	var path string
+	var b []byte
+	for _, candidate := range []string{
+		filepath.Join(base, "avatar.png"),
+		filepath.Join(base, "avatar.jpg"),
+		filepath.Join(base, "avatar.jpeg"),
+		filepath.Join(base, "avatar.heic"),
+		// Legacy (no extension).
+		filepath.Join(base, "avatar.bin"),
+	} {
+		if cb, err := os.ReadFile(candidate); err == nil && len(cb) > 0 {
+			path = candidate
+			b = cb
+			break
 		}
 	}
+	if path == "" || len(b) == 0 {
+		return os.ErrNotExist
+	}
+
 	sum := sha256.Sum256(b)
 	n.avatarPNG = b
 	n.avatarHash = append([]byte(nil), sum[:16]...)
 	if st, err := os.Stat(path); err == nil {
 		n.avatarMTime = st.ModTime().Unix()
 	}
-	n.avatarMime = strings.TrimSpace(string(readFileOrNil(n.avatarMimePath())))
+
+	ext := strings.ToLower(filepath.Ext(path))
+	n.avatarMime = avatarMimeForExt(ext)
 	if n.avatarMime == "" {
 		n.avatarMime = detectAvatarMime(b)
+	}
+	if n.avatarMime == "" {
+		return errors.New("unknown avatar mime")
 	}
 	return nil
 }
@@ -1030,13 +1082,50 @@ func (n *Node) saveAvatarToDisk() error {
 	if len(n.avatarPNG) == 0 {
 		return nil
 	}
-	if err := os.WriteFile(n.avatarPath(), n.avatarPNG, 0o644); err != nil {
+	target := n.avatarPath()
+	if err := os.WriteFile(target, n.avatarPNG, 0o644); err != nil {
 		return err
 	}
-	if n.avatarMime != "" {
-		_ = os.WriteFile(n.avatarMimePath(), []byte(n.avatarMime), 0o644)
-	}
 	return nil
+}
+
+func (n *Node) avatarStoreDir() string {
+	if n == nil {
+		return ""
+	}
+	if dir, err := n.findMeContactDir(); err == nil && dir != "" {
+		return dir
+	}
+	if dir, err := n.ensureMeContactDir(); err == nil && dir != "" {
+		return dir
+	}
+	return n.opts.Dir
+}
+
+func avatarExtForMime(mime string) string {
+	switch strings.ToLower(strings.TrimSpace(mime)) {
+	case "image/png":
+		return ".png"
+	case "image/jpeg", "image/jpg":
+		return ".jpg"
+	case "image/heic":
+		return ".heic"
+	default:
+		return ".bin"
+	}
+}
+
+func avatarMimeForExt(ext string) string {
+	switch strings.ToLower(strings.TrimSpace(ext)) {
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".heic":
+		return "image/heic"
+	default:
+		return ""
+	}
 }
 
 func detectAvatarMime(data []byte) string {
