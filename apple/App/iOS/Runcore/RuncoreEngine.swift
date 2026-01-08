@@ -1,117 +1,35 @@
-import Foundation
 import Darwin
+import Foundation
 
 final class RuncoreEngine {
     private var handle: runcore_handle_t = 0
     private var cachedDestHex: String = ""
+    private var cachedMeFolderName: String = ""
 
-    var onInbound: ((_ srcHashHex: String, _ messageIDHex: String, _ title: String, _ content: String) -> Void)?
-    var onMessageStatus: ((_ destHashHex: String, _ messageIDHex: String, _ state: Int32) -> Void)?
     var onLogLine: ((_ level: Int32, _ line: String) -> Void)?
     var displayName: String = "Me"
     var logLevel: Int32 = 3
     private(set) var contactsDirPath: String?
-    private(set) var lxmfDirPath: String?
+    private(set) var configDirPath: String?
+    private(set) var sendDirPath: String?
 
     var contactsDirectoryURL: URL? {
         guard let path = contactsDirPath else { return nil }
         return URL(fileURLWithPath: path)
     }
 
-    var lxmfDirectoryURL: URL? {
-        guard let path = lxmfDirPath else { return nil }
+    var configDirectoryURL: URL? {
+        guard let path = configDirPath else { return nil }
         return URL(fileURLWithPath: path)
     }
 
-    struct ContactAvatarInfo: Decodable {
+    struct ContactAvatarInfo {
         let hashHex: String?
-
-        enum CodingKeys: String, CodingKey {
-            case hashHex = "hash_hex"
-        }
     }
 
-    struct ContactInfo: Decodable {
+    struct ContactInfo {
         let displayName: String?
         let avatar: ContactAvatarInfo?
-
-        enum CodingKeys: String, CodingKey {
-            case displayName = "display_name"
-            case avatar
-        }
-    }
-
-    struct ContactAvatarResponse: Decodable {
-        let hashHex: String?
-        let dataBase64: String?
-        let pngBase64: String?
-        let mime: String?
-        let unchanged: Bool?
-        let notPresent: Bool?
-        let error: String?
-
-        enum CodingKeys: String, CodingKey {
-            case hashHex = "hash_hex"
-            case dataBase64 = "data_base64"
-            case pngBase64 = "png_base64"
-            case mime
-            case unchanged
-            case notPresent = "not_present"
-            case error
-        }
-    }
-
-    struct StoreAttachmentResponse: Decodable {
-        let rc: Int32
-        let hashHex: String?
-        let mime: String?
-        let name: String?
-        let size: Int?
-        let updated: Int64?
-        let error: String?
-
-        enum CodingKeys: String, CodingKey {
-            case rc
-            case hashHex = "hash_hex"
-            case mime
-            case name
-            case size
-            case updated
-            case error
-        }
-    }
-
-    struct ContactAttachmentResponse: Decodable {
-        let hashHex: String?
-        let path: String?
-        let mime: String?
-        let name: String?
-        let size: Int?
-        let notPresent: Bool?
-        let error: String?
-
-        enum CodingKeys: String, CodingKey {
-            case hashHex = "hash_hex"
-            case path
-            case mime
-            case name
-            case size
-            case notPresent = "not_present"
-            case error
-        }
-    }
-
-
-    struct SendResult: Decodable {
-        let rc: Int32
-        let messageIDHex: String?
-        let error: String?
-
-        enum CodingKeys: String, CodingKey {
-            case rc
-            case messageIDHex = "message_id_hex"
-            case error
-        }
     }
 
     func start() {
@@ -129,59 +47,35 @@ final class RuncoreEngine {
 
         let root = iCloudRootDir()
         let contactsDir = (root as NSString).appendingPathComponent("contacts")
-        let lxmfDir = (root as NSString).appendingPathComponent("lxmf")
         let sendDir = (root as NSString).appendingPathComponent("send")
+        let messagesDir = (root as NSString).appendingPathComponent("messages")
         let fm = FileManager.default
         try? fm.createDirectory(atPath: contactsDir, withIntermediateDirectories: true)
-        try? fm.createDirectory(atPath: lxmfDir, withIntermediateDirectories: true)
         try? fm.createDirectory(atPath: sendDir, withIntermediateDirectories: true)
+        try? fm.createDirectory(atPath: messagesDir, withIntermediateDirectories: true)
         contactsDirPath = contactsDir
-        lxmfDirPath = lxmfDir
-
-        // Tell Go where to keep configs/state (system folder) without changing the FFI signature.
-        let cfg = systemConfigDir()
-        cfg.withCString { cCfg in
-            _ = setenv("RUNCORE_DIR", cCfg, 1)
-        }
+        configDirPath = nil
+        sendDirPath = sendDir
 
         contactsDir.withCString { cContacts in
-            lxmfDir.withCString { cLXMF in
-                sendDir.withCString { cSend in
-                    displayName.withCString { cName in
-                        handle = runcore_start(cContacts, cLXMF, cSend, cName, logLevel, 0)
-                    }
+            sendDir.withCString { cSend in
+                messagesDir.withCString { cMessages in
+                    handle = runcore_start(cContacts, cSend, cMessages, logLevel)
                 }
             }
         }
         guard handle != 0 else { return }
-        cachedDestHex = destinationHashHex()
+        cachedDestHex = ""
 
-        if let ptr = runcore_profile_name(handle) {
-            displayName = String(cString: ptr)
+        if let ptr = runcore_config_dir(handle) {
+            configDirPath = String(cString: ptr)
             runcore_free_string(ptr)
         }
 
-        runcore_set_inbound_cb(handle, { userData, srcHash, msgID, title, content in
-            guard let userData else { return }
-            let engine = Unmanaged<RuncoreEngine>.fromOpaque(userData).takeUnretainedValue()
-            let src = srcHash.map { String(cString: $0) } ?? ""
-            let mid = msgID.map { String(cString: $0) } ?? ""
-            let t = title.map { String(cString: $0) } ?? ""
-            let c = content.map { String(cString: $0) } ?? ""
-            DispatchQueue.main.async {
-                engine.onInbound?(src, mid, t, c)
-            }
-        }, Unmanaged.passUnretained(self).toOpaque())
-
-        runcore_set_message_status_cb(handle, { userData, destHash, msgID, state in
-            guard let userData else { return }
-            let engine = Unmanaged<RuncoreEngine>.fromOpaque(userData).takeUnretainedValue()
-            let dest = destHash.map { String(cString: $0) } ?? ""
-            let mid = msgID.map { String(cString: $0) } ?? ""
-            DispatchQueue.main.async {
-                engine.onMessageStatus?(dest, mid, state)
-            }
-        }, Unmanaged.passUnretained(self).toOpaque())
+        cachedMeFolderName = findMeFolderName() ?? ""
+        if !cachedMeFolderName.isEmpty {
+            displayName = cachedMeFolderName
+        }
     }
 
     func stop() {
@@ -190,22 +84,52 @@ final class RuncoreEngine {
         handle = 0
     }
 
-    func announce(reason: String = "ffi") -> Int32 {
-        guard handle != 0 else { return 1 }
-        return reason.withCString { cReason in
-            runcore_announce_with_reason(handle, cReason)
-        }
-    }
-
     func setLogLevel(_ level: Int32) {
         logLevel = level
         runcore_set_loglevel(level)
     }
 
     func destinationHashHex() -> String {
+        if !cachedDestHex.isEmpty { return cachedDestHex }
         guard handle != 0 else { return cachedDestHex }
-        guard let ptr = runcore_destination_hash_hex(handle) else { return cachedDestHex }
-        return String(cString: ptr)
+        guard let contactsDirPath, !contactsDirPath.isEmpty else { return cachedDestHex }
+        let meName = cachedMeFolderName.isEmpty ? (findMeFolderName() ?? displayName) : cachedMeFolderName
+        guard !meName.isEmpty else { return cachedDestHex }
+        let meDir = (contactsDirPath as NSString).appendingPathComponent(meName)
+        let lxmfPath = (meDir as NSString).appendingPathComponent("lxmf")
+        if let s = try? String(contentsOfFile: lxmfPath, encoding: .utf8) {
+            let v = s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if !v.isEmpty {
+                cachedDestHex = v
+                return v
+            }
+        }
+        return cachedDestHex
+    }
+
+    private func findMeFolderName() -> String? {
+        guard let contactsDirPath, !contactsDirPath.isEmpty else { return nil }
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(atPath: contactsDirPath) else { return nil }
+        for name in entries {
+            let p = (contactsDirPath as NSString).appendingPathComponent(name)
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: p, isDirectory: &isDir), isDir.boolValue else { continue }
+            if hasMeXattr(path: p) {
+                return name
+            }
+        }
+        return nil
+    }
+
+    private func hasMeXattr(path: String) -> Bool {
+        let key = "user.runcore.me"
+        return path.withCString { cPath in
+            key.withCString { cKey in
+                let rc = getxattr(cPath, cKey, nil, 0, 0, 0)
+                return rc >= 0
+            }
+        }
     }
 
     func interfaceStatsJSON() -> String {
@@ -215,49 +139,33 @@ final class RuncoreEngine {
         return String(cString: ptr)
     }
 
-    func configuredInterfacesJSON() -> String {
-        guard handle != 0 else { return "{}" }
-        guard let ptr = runcore_configured_interfaces_json(handle) else { return "" }
-        defer { runcore_free_string(ptr) }
-        return String(cString: ptr)
-    }
-
     func announcesJSON() -> String {
-        guard handle != 0 else { return "{}" }
-        guard let ptr = runcore_announces_json(handle) else { return "" }
-        defer { runcore_free_string(ptr) }
-        return String(cString: ptr)
+        guard let configDirPath, !configDirPath.isEmpty else { return "" }
+        let path = (configDirPath as NSString).appendingPathComponent("storage/announces.json")
+        return (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
     }
 
-    func contactInfo(destHashHex: String, timeoutMs: Int32 = 1500) -> ContactInfo? {
-        guard handle != 0 else { return nil }
-        return destHashHex.withCString { cDest in
-            guard let ptr = runcore_contact_info_json(handle, cDest, timeoutMs) else { return nil }
-            defer { runcore_free_string(ptr) }
-            let json = String(cString: ptr)
-            guard let data = json.data(using: .utf8) else { return nil }
-            return try? JSONDecoder().decode(ContactInfo.self, from: data)
-        }
-    }
+    func contactInfoFromDisk(destHashHex: String) -> ContactInfo? {
+        guard let configDirPath, !configDirPath.isEmpty else { return nil }
+        let dest = destHashHex.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !dest.isEmpty else { return nil }
+        let announcesPath = (configDirPath as NSString).appendingPathComponent("storage/announces.json")
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: announcesPath)) else { return nil }
+        struct AnnounceEntry: Decodable {
+            let destinationHashHex: String
+            let displayName: String?
+            let avatarHashHex: String?
 
-    func contactAvatar(destHashHex: String, knownHashHex: String?, timeoutMs: Int32 = 5000) -> ContactAvatarResponse? {
-        guard handle != 0 else { return nil }
-        return destHashHex.withCString { cDest in
-            if let knownHashHex, !knownHashHex.isEmpty {
-                return knownHashHex.withCString { cKnown in
-                    guard let ptr = runcore_contact_avatar_json(handle, cDest, cKnown, timeoutMs) else { return nil }
-                    defer { runcore_free_string(ptr) }
-                    let json = String(cString: ptr)
-                    guard let data = json.data(using: .utf8) else { return nil }
-                    return try? JSONDecoder().decode(ContactAvatarResponse.self, from: data)
-                }
+            enum CodingKeys: String, CodingKey {
+                case destinationHashHex = "destination_hash_hex"
+                case displayName = "display_name"
+                case avatarHashHex = "avatar_hash_hex"
             }
-            guard let ptr = runcore_contact_avatar_json(handle, cDest, nil, timeoutMs) else { return nil }
-            defer { runcore_free_string(ptr) }
-            let json = String(cString: ptr)
-            guard let data = json.data(using: .utf8) else { return nil }
-            return try? JSONDecoder().decode(ContactAvatarResponse.self, from: data)
         }
+        guard let entries = try? JSONDecoder().decode([AnnounceEntry].self, from: data) else { return nil }
+        guard let hit = entries.first(where: { $0.destinationHashHex.lowercased() == dest }) else { return nil }
+        let av = (hit.avatarHashHex?.isEmpty == false) ? ContactAvatarInfo(hashHex: hit.avatarHashHex?.lowercased()) : nil
+        return ContactInfo(displayName: hit.displayName, avatar: av)
     }
 
     private func withOptionalCString<R>(_ s: String?, _ body: (UnsafePointer<CChar>?) -> R) -> R {
@@ -266,38 +174,6 @@ final class RuncoreEngine {
         }
         return body(nil)
     }
-
-    func storeAttachment(mime: String?, name: String?, data: Data) -> StoreAttachmentResponse? {
-        guard handle != 0 else { return nil }
-        guard !data.isEmpty else { return StoreAttachmentResponse(rc: 2, hashHex: nil, mime: nil, name: nil, size: nil, updated: nil, error: "empty data") }
-        let jsonPtr: UnsafeMutablePointer<CChar>? = data.withUnsafeBytes { buf in
-            guard let base = buf.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return nil }
-            return withOptionalCString(mime) { cMime in
-                withOptionalCString(name) { cName in
-                    runcore_store_attachment_json(handle, cMime, cName, base, Int32(buf.count))
-                }
-            }
-        }
-        guard let jsonPtr else { return nil }
-        defer { runcore_free_string(jsonPtr) }
-        let json = String(cString: jsonPtr)
-        guard let data = json.data(using: .utf8) else { return nil }
-        return try? JSONDecoder().decode(StoreAttachmentResponse.self, from: data)
-    }
-
-    func contactAttachment(destHashHex: String, attachmentHashHex: String, timeoutMs: Int32 = 15000) -> ContactAttachmentResponse? {
-        guard handle != 0 else { return nil }
-        return destHashHex.withCString { cDest in
-            attachmentHashHex.withCString { cHash in
-                guard let ptr = runcore_contact_attachment_json(handle, cDest, cHash, timeoutMs) else { return nil }
-                defer { runcore_free_string(ptr) }
-                let json = String(cString: ptr)
-                guard let data = json.data(using: .utf8) else { return nil }
-                return try? JSONDecoder().decode(ContactAttachmentResponse.self, from: data)
-            }
-        }
-    }
-
 
     func setInterfaceEnabled(name: String, enabled: Bool) -> Int32 {
         guard handle != 0 else { return 1 }
@@ -312,64 +188,94 @@ final class RuncoreEngine {
         return String(cString: ptr)
     }
 
-    func defaultLXMDConfigText(displayName: String) -> String {
-        return displayName.withCString { cName in
-            guard let ptr = runcore_default_lxmd_config_for_name(cName) else { return "" }
-            defer { runcore_free_string(ptr) }
-            return String(cString: ptr)
-        }
-    }
-
-    func defaultRNSConfigText(logLevel: Int32) -> String {
-        guard let ptr = runcore_default_rns_config(logLevel) else { return "" }
+    func defaultRNSConfigText() -> String {
+        guard let ptr = runcore_default_rns_config() else { return "" }
         defer { runcore_free_string(ptr) }
         return String(cString: ptr)
     }
 
-    func sendResult(destHashHex: String, title: String, content: String) -> SendResult {
-        guard handle != 0 else { return SendResult(rc: 1, messageIDHex: nil, error: "engine not started") }
-        let jsonPtr: UnsafeMutablePointer<CChar>? = destHashHex.withCString { cDest in
-            title.withCString { cTitle in
-                content.withCString { cContent in
-                    runcore_send_result_json(handle, cDest, cTitle, cContent)
-                }
-            }
+    func enqueueSendText(destHashHex: String, title: String, content: String) -> Bool {
+        guard let sendDirPath, !sendDirPath.isEmpty else { return false }
+        let dest = destHashHex.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !dest.isEmpty else { return false }
+        let safeTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefix = safeTitle.isEmpty ? "msg" : safeTitle
+        let fileName = "\(prefix) -- \(UUID().uuidString).txt"
+        let dir = (sendDirPath as NSString).appendingPathComponent(dest)
+        let target = (dir as NSString).appendingPathComponent(fileName)
+        do {
+            try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            let data = content.data(using: .utf8) ?? Data()
+            try data.write(to: URL(fileURLWithPath: target), options: [.atomic])
+            return true
+        } catch {
+            return false
         }
-        guard let jsonPtr else { return SendResult(rc: 2, messageIDHex: nil, error: "no response") }
-        defer { runcore_free_string(jsonPtr) }
-        let json = String(cString: jsonPtr)
-        guard let data = json.data(using: .utf8) else {
-            return SendResult(rc: 2, messageIDHex: nil, error: "invalid json")
-        }
-        return (try? JSONDecoder().decode(SendResult.self, from: data)) ?? SendResult(rc: 2, messageIDHex: nil, error: "decode failed")
     }
 
-        func setAvatarImage(mime: String, data: Data) -> Int32 {
+    func enqueueSendFile(destHashHex: String, fileURL: URL, caption: String?) -> Bool {
+        guard let sendDirPath, !sendDirPath.isEmpty else { return false }
+        let dest = destHashHex.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !dest.isEmpty else { return false }
+        let dir = (sendDirPath as NSString).appendingPathComponent(dest)
+        do {
+            try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            let target = URL(fileURLWithPath: dir).appendingPathComponent(fileURL.lastPathComponent)
+            if FileManager.default.fileExists(atPath: target.path) {
+                let alt = URL(fileURLWithPath: dir).appendingPathComponent("\(UUID().uuidString) \(fileURL.lastPathComponent)")
+                try FileManager.default.copyItem(at: fileURL, to: alt)
+            } else {
+                try FileManager.default.copyItem(at: fileURL, to: target)
+            }
+            if let caption, !caption.isEmpty {
+                let capURL = URL(fileURLWithPath: dir).appendingPathComponent("caption.txt")
+                let data = caption.data(using: .utf8) ?? Data()
+                try data.write(to: capURL, options: [.atomic])
+            }
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    func setAvatarImage(mime: String, data: Data) -> Int32 {
         guard handle != 0 else { return 1 }
-        return data.withUnsafeBytes { buf in
-            guard let base = buf.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return 2 }
-            return mime.withCString { cMime in
-                runcore_set_avatar_image(handle, cMime, base, Int32(buf.count))
-            }
+        guard let me = cachedMeFolderName.isEmpty ? findMeFolderName() : cachedMeFolderName else { return 2 }
+        guard let contactsDirPath else { return 2 }
+        let meDir = (contactsDirPath as NSString).appendingPathComponent(me)
+        let ext: String
+        switch mime.lowercased() {
+        case "image/png": ext = "png"
+        case "image/jpeg", "image/jpg": ext = "jpg"
+        case "image/heic": ext = "heic"
+        default: ext = "bin"
         }
+        let target = (meDir as NSString).appendingPathComponent("avatar.\(ext)")
+        do {
+            try data.write(to: URL(fileURLWithPath: target), options: [.atomic])
+        } catch {
+            return 3
+        }
+        return 0
     }
 
-func setAvatarPNG(_ data: Data) -> Int32 {
+    func setAvatarPNG(_ data: Data) -> Int32 {
         guard handle != 0 else { return 1 }
         guard !data.isEmpty else { return 2 }
-        let rc: Int32 = data.withUnsafeBytes { buf in
-            guard let base = buf.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return 2 }
-            return runcore_set_avatar_png(handle, base, Int32(buf.count))
-        }
-        if rc == 0 { _ = announce(reason: "avatar_changed") }
-        return rc
+        return setAvatarImage(mime: "image/png", data: data)
     }
 
     func clearAvatar() -> Int32 {
         guard handle != 0 else { return 1 }
-        let rc = runcore_clear_avatar(handle)
-        if rc == 0 { _ = announce(reason: "avatar_cleared") }
-        return rc
+        guard let me = cachedMeFolderName.isEmpty ? findMeFolderName() : cachedMeFolderName else { return 2 }
+        guard let contactsDirPath else { return 2 }
+        let meDir = (contactsDirPath as NSString).appendingPathComponent(me)
+        let fm = FileManager.default
+        for ext in ["png", "jpg", "jpeg", "heic", "bin"] {
+            let p = (meDir as NSString).appendingPathComponent("avatar.\(ext)")
+            try? fm.removeItem(atPath: p)
+        }
+        return 0
     }
 
     func updateDisplayNameAndAnnounce(_ name: String) {
@@ -378,7 +284,6 @@ func setAvatarPNG(_ data: Data) -> Int32 {
         name.withCString { cName in
             _ = runcore_set_display_name(handle, cName)
         }
-        _ = announce(reason: "display_name_changed")
     }
 
     func setDisplayName(_ name: String) {
@@ -392,7 +297,7 @@ func setAvatarPNG(_ data: Data) -> Int32 {
     func restart() {
         guard handle != 0 else { return }
         _ = runcore_restart(handle)
-        cachedDestHex = destinationHashHex()
+        cachedDestHex = ""
     }
 
     private func systemConfigDir() -> String {

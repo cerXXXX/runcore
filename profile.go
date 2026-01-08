@@ -70,6 +70,7 @@ func (n *Node) registerAvatarRequestHandler(dest *rns.Destination) error {
 				}
 			}
 
+			n.refreshAvatarFromDisk()
 			hash := append([]byte(nil), n.avatarHash...)
 			avatarData := append([]byte(nil), n.avatarPNG...)
 			mtime := n.avatarMTime
@@ -329,6 +330,188 @@ func (n *Node) fetchAvatarViaDestination(outDest *rns.Destination, knownAvatarHa
 		case <-deadline.C:
 			rns.Logf(rns.LOG_NOTICE, "avatar fetch: request timeout")
 			return ContactAvatarFetch{}, errors.New("avatar request timeout")
+		}
+	}
+}
+
+func (n *Node) fetchContactAvatarBytesHex(destinationHashHex string, timeout time.Duration) (data []byte, mime string, hashHex string, err error) {
+	if n == nil || n.identity == nil {
+		return nil, "", "", errors.New("node not started")
+	}
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+
+	id, err := n.WaitForIdentityHex(destinationHashHex, timeout)
+	if err != nil {
+		return nil, "", "", err
+	}
+	if id == nil {
+		return nil, "", "", errors.New("unknown destination identity")
+	}
+
+	var lastErr error
+	destinations := []struct {
+		app    string
+		aspect string
+		label  string
+	}{
+		{app: lxmf.AppName, aspect: "delivery", label: "lxmf.delivery"},
+		{app: profileAppName, aspect: profileAspect, label: "runcore.profile"},
+	}
+	for _, spec := range destinations {
+		rns.Logf(rns.LOG_NOTICE, "avatar fetch: try %s dest=%s", spec.label, destinationHashHex)
+		outDest, err := rns.NewDestination(id, rns.DestinationOUT, rns.DestinationSINGLE, spec.app, spec.aspect)
+		if err != nil {
+			lastErr = fmt.Errorf("create %s outbound destination: %w", spec.label, err)
+			continue
+		}
+		data, mime, hashHex, err := n.fetchAvatarBytesViaDestination(outDest, "", timeout)
+		if err == nil {
+			return data, mime, hashHex, nil
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return nil, "", "", lastErr
+	}
+	return nil, "", "", errors.New("avatar request failed")
+}
+
+func (n *Node) fetchAvatarBytesViaDestination(outDest *rns.Destination, knownAvatarHashHex string, timeout time.Duration) (data []byte, mime string, hashHex string, err error) {
+	if outDest == nil {
+		return nil, "", "", errors.New("nil destination")
+	}
+
+	if !rns.TransportHasPath(outDest.Hash()) {
+		rns.Logf(rns.LOG_NOTICE, "avatar fetch: no path yet, requesting path dest=%s", hex.EncodeToString(outDest.Hash()))
+		rns.TransportRequestPath(outDest.Hash())
+		waitDeadline := time.Now().Add(minDuration(timeout, 4*time.Second))
+		for !rns.TransportHasPath(outDest.Hash()) && time.Now().Before(waitDeadline) {
+			time.Sleep(150 * time.Millisecond)
+		}
+		if rns.TransportHasPath(outDest.Hash()) {
+			rns.Logf(rns.LOG_NOTICE, "avatar fetch: path acquired dest=%s", hex.EncodeToString(outDest.Hash()))
+		}
+	}
+
+	established := make(chan struct{})
+	closed := make(chan struct{})
+	link, err := rns.NewOutgoingLink(outDest, -1, func(*rns.Link) {
+		select {
+		case <-established:
+		default:
+			close(established)
+		}
+	}, func(*rns.Link) {
+		select {
+		case <-closed:
+		default:
+			close(closed)
+		}
+	})
+	if err != nil {
+		rns.Logf(rns.LOG_NOTICE, "avatar fetch: open link failed: %v", err)
+		return nil, "", "", fmt.Errorf("open link: %w", err)
+	}
+	defer link.Teardown()
+
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	select {
+	case <-established:
+	case <-closed:
+		return nil, "", "", errors.New("link closed before establishment")
+	case <-deadline.C:
+		return nil, "", "", errors.New("timeout establishing link")
+	}
+
+	link.Identify(n.identity)
+
+	req := map[any]any{}
+	if knownAvatarHashHex != "" {
+		if b, err := hex.DecodeString(knownAvatarHashHex); err == nil && len(b) > 0 {
+			req["h"] = b
+		}
+	}
+
+	respCh := make(chan any, 1)
+	failCh := make(chan struct{}, 1)
+	resCh := make(chan *rns.Resource, 1)
+	link.SetResourceStrategy(rns.LinkAcceptAll)
+	link.SetResourceConcludedCallback(func(res *rns.Resource) {
+		select {
+		case resCh <- res:
+		default:
+		}
+	})
+	rr := link.Request(
+		profileAvatarReq,
+		req,
+		func(rr *rns.RequestReceipt) { respCh <- rr.Response() },
+		func(rr *rns.RequestReceipt) { failCh <- struct{}{} },
+		nil,
+		timeout.Seconds(),
+	)
+	if rr == nil {
+		return nil, "", "", errors.New("failed to send avatar request")
+	}
+
+	var respHash []byte
+	var respMime string
+	var respUnchanged bool
+
+	for {
+		select {
+		case resp := <-respCh:
+			switch v := resp.(type) {
+			case map[any]any:
+				ok, _ := v["ok"].(bool)
+				if !ok {
+					return nil, "", "", nil
+				}
+				respUnchanged, _ = v["unchanged"].(bool)
+				if hv, ok := v["h"].([]byte); ok {
+					respHash = append([]byte(nil), hv...)
+				}
+				if tv, ok := v["t"].(string); ok {
+					respMime = tv
+				}
+				if respUnchanged {
+					return nil, respMime, hex.EncodeToString(respHash), nil
+				}
+			case []byte:
+				return append([]byte(nil), v...), "", "", nil
+			default:
+				return nil, "", "", errors.New("unexpected avatar response type")
+			}
+		case res := <-resCh:
+			if res == nil {
+				return nil, "", "", errors.New("avatar resource nil")
+			}
+			if res.Status() != rns.ResourceComplete {
+				return nil, "", "", errors.New("avatar resource failed")
+			}
+			meta := res.Metadata()
+			kind, _ := meta["kind"].(string)
+			if kind != "" && kind != profileAvatarRes {
+				return nil, "", "", errors.New("unexpected avatar resource kind")
+			}
+			if hv, ok := meta["h"].([]byte); ok && len(hv) > 0 {
+				respHash = append([]byte(nil), hv...)
+			}
+			if tv, ok := meta["t"].(string); ok && tv != "" {
+				respMime = tv
+			}
+			b, err := os.ReadFile(res.DataFile())
+			if err != nil {
+				return nil, "", "", fmt.Errorf("read avatar resource: %w", err)
+			}
+			return b, respMime, hex.EncodeToString(respHash), nil
+		case <-failCh:
+			return nil, "", "", errors.New("avatar request failed")
+		case <-deadline.C:
+			return nil, "", "", errors.New("avatar request timeout")
 		}
 	}
 }

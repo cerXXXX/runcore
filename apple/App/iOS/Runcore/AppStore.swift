@@ -1,5 +1,5 @@
-import Foundation
 import CryptoKit
+import Foundation
 import ImageIO
 import UIKit
 import UniformTypeIdentifiers
@@ -23,8 +23,6 @@ final class AppStore: ObservableObject {
     @Published var lastInterfaceStatsJSON: String = ""
     @Published var lastInterfaceStatsError: String?
     @Published var configuredInterfaces: [ConfiguredInterface] = []
-    @Published var lastConfiguredInterfacesJSON: String = ""
-    @Published var lastConfiguredInterfacesError: String?
     @Published var announces: [AnnounceEntry] = []
     @Published var lastAnnouncesJSON: String = ""
     @Published var lastAnnouncesError: String?
@@ -59,7 +57,7 @@ final class AppStore: ObservableObject {
         let receivedAt: Date
 
         init(destHashHex: String, messageIDHex: String, title: String, content: String, receivedAt: Date = Date()) {
-            self.id = UUID()
+            id = UUID()
             self.destHashHex = destHashHex
             self.messageIDHex = messageIDHex
             self.title = title
@@ -76,58 +74,6 @@ final class AppStore: ObservableObject {
             guard let self else { return }
             self.appendRawLog(line)
         }
-        engine.onInbound = { [weak self] srcHex, messageIDHex, title, content in
-            guard let self else { return }
-            let src = normalizeDestinationHashHex(srcHex)
-            let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-            self.appendLog("inbound src=\(src) title=\(trimmedTitle)")
-
-            if self.isBlockedDestination(src) {
-                self.appendLog("inbound dropped (blocked) src=\(src)")
-                return
-            }
-
-            if trimmedTitle == self.readReceiptTitle {
-                self.applyReadReceipt(from: src, content: content)
-                return
-            }
-
-            if let contact = self.contacts.first(where: { $0.destinationHashHex == src }) {
-                if let parsed = self.parseAttachmentMessage(title: trimmedTitle, content: content) {
-                    let localID = UUID()
-                    self.messagesByContactID[contact.id, default: []].append(
-                        ChatMessage(
-                            id: localID,
-                            direction: .inbound,
-                            text: parsed.caption,
-                            attachment: MessageAttachment(
-                                hashHex: parsed.hashHex,
-                                mime: parsed.mime,
-                                name: parsed.name,
-                                size: parsed.size,
-                                localPath: nil
-                            ),
-                            title: "img",
-                            lxmfMessageIDHex: messageIDHex
-                        )
-                    )
-                    self.save()
-                    self.fetchAttachment(remoteHashHex: src, contactID: contact.id, localMessageID: localID, attachmentHashHex: parsed.hashHex)
-                    return
-                }
-                self.messagesByContactID[contact.id, default: []].append(
-                    ChatMessage(direction: .inbound, text: content, title: trimmedTitle, lxmfMessageIDHex: messageIDHex)
-                )
-                self.save()
-                return
-            }
-
-            self.enqueueInboundPrompt(InboundPrompt(destHashHex: src, messageIDHex: messageIDHex, title: trimmedTitle, content: content))
-        }
-        engine.onMessageStatus = { [weak self] destHex, messageIDHex, state in
-            guard let self else { return }
-            self.applyOutboundStatus(destHashHex: destHex, messageIDHex: messageIDHex, state: state)
-        }
         engine.start()
         if let storage = ContactDiskStorage(rootURL: engine.contactsDirectoryURL) {
             contactStorage = storage
@@ -143,7 +89,6 @@ final class AppStore: ObservableObject {
             if rc != 0 { appendLog("set avatar failed rc=\(rc)") }
         }
         refreshInterfaceStats()
-        refreshConfiguredInterfaces()
         refreshAnnounces()
         statsPollTask?.cancel()
         statsPollTask = Task { @MainActor in
@@ -151,7 +96,6 @@ final class AppStore: ObservableObject {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 if Task.isCancelled { return }
                 self.refreshInterfaceStats()
-                self.refreshConfiguredInterfaces()
                 self.refreshAnnounces()
             }
         }
@@ -167,76 +111,28 @@ final class AppStore: ObservableObject {
     }
 
     func requestAnnounce(reason: String) {
-        let now = Date()
-        if let last = lastAnnounceRequestAt, now.timeIntervalSince(last) < 3 {
-            return
-        }
-        lastAnnounceRequestAt = now
-        let rc = engine.announce(reason: reason)
-        if rc == 0 {
-            appendLog("announce requested (\(reason))")
-        } else {
-            appendLog("announce requested (\(reason)) failed rc=\(rc)")
-        }
+        // Announces are handled by the Go core automatically (periodic + change detection).
+        appendLog("announce is automatic (\(reason))")
     }
 
     func sendImageAttachment(to contactID: UUID, data: Data, suggestedName: String?, caption: String) {
         guard !data.isEmpty else { return }
         guard let contact = contacts.first(where: { $0.id == contactID }) else { return }
 
-        let stored = engine.storeAttachment(mime: nil, name: suggestedName, data: data)
-        guard let stored else {
-            appendLog("store attachment failed: no response")
+        let base = suggestedName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let safeName = (base?.isEmpty == false) ? base! : "image.bin"
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString) \(safeName)")
+        do {
+            try data.write(to: tmp, options: [.atomic])
+        } catch {
+            appendLog("attachment temp write failed: \(error)")
             return
         }
-        if let err = stored.error, !err.isEmpty {
-            appendLog("store attachment failed: \(err)")
-            return
+        let ok = engine.enqueueSendFile(destHashHex: contact.destinationHashHex, fileURL: tmp, caption: caption)
+        if !ok {
+            appendLog("enqueue send attachment failed")
         }
-        guard stored.rc == 0, let hash = stored.hashHex, !hash.isEmpty else {
-            appendLog("store attachment failed rc=\(stored.rc)")
-            return
-        }
-
-        let originalName = stored.name ?? suggestedName ?? hash
-        let pendingURL = pendingAttachmentURL(for: contact, baseName: originalName)
-        if let pendingURL {
-            do {
-                try FileManager.default.createDirectory(at: pendingURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try data.write(to: pendingURL, options: [.atomic])
-            } catch {
-                appendLog("attachment save failed: \(error)")
-            }
-        } else {
-            appendLog("attachment save failed: pending path unavailable")
-        }
-
-        let messageText = caption
-        var msg = ChatMessage(
-            direction: .outbound,
-            text: messageText,
-            attachment: MessageAttachment(
-                hashHex: hash,
-                mime: stored.mime,
-                name: stored.name ?? suggestedName,
-                size: stored.size,
-                localPath: pendingURL?.path
-            ),
-            title: "img",
-            outboundStatus: .pending
-        )
-        messagesByContactID[contactID, default: []].append(msg)
-        save()
-
-        let payload = formatAttachmentMessage(hashHex: hash, mime: stored.mime, name: stored.name ?? suggestedName, size: stored.size, caption: caption)
-        let localMsgID = msg.id
-        Task.detached { [weak self] in
-            guard let self else { return }
-            let result = self.engine.sendResult(destHashHex: contact.destinationHashHex, title: "img", content: payload)
-            await MainActor.run {
-                self.updateOutboundMessage(contactID: contactID, localID: localMsgID, sendResult: result)
-            }
-        }
+        try? FileManager.default.removeItem(at: tmp)
     }
 
     private func formatAttachmentMessage(hashHex: String, mime: String?, name: String?, size: Int?, caption: String) -> String {
@@ -288,34 +184,7 @@ final class AppStore: ObservableObject {
         return AttachmentParsed(hashHex: hash, mime: mime, name: name, size: size, caption: caption)
     }
 
-    private func fetchAttachment(remoteHashHex: String, contactID: UUID, localMessageID: UUID, attachmentHashHex: String) {
-        let remote = normalizeDestinationHashHex(remoteHashHex)
-        let hash = attachmentHashHex.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !remote.isEmpty, !hash.isEmpty else { return }
-        Task.detached { [weak self] in
-            guard let self else { return }
-            let resp = self.engine.contactAttachment(destHashHex: remote, attachmentHashHex: hash, timeoutMs: 20000)
-            await MainActor.run {
-                guard let resp else { return }
-                if let err = resp.error, !err.isEmpty {
-                    self.appendLog("attachment fetch failed for \(remote): \(err)")
-                    return
-                }
-                guard let path = resp.path, !path.isEmpty else { return }
-                self.setAttachmentPath(contactID: contactID, localMessageID: localMessageID, path: path)
-            }
-        }
-    }
-
-    private func setAttachmentPath(contactID: UUID, localMessageID: UUID, path: String) {
-        guard var list = messagesByContactID[contactID] else { return }
-        guard let idx = list.firstIndex(where: { $0.id == localMessageID }) else { return }
-        guard var att = list[idx].attachment else { return }
-        att.localPath = path
-        list[idx].attachment = att
-        messagesByContactID[contactID] = list
-        save()
-    }
+    // Attachment payloads are fetched by the Go core and written into the messages folder.
 
     deinit {
         statsPollTask?.cancel()
@@ -339,9 +208,9 @@ final class AppStore: ObservableObject {
     func defaultConfigText(_ kind: ConfigKind) -> String {
         switch kind {
         case .runcore:
-            return engine.defaultLXMDConfigText(displayName: profileName)
+            return engine.defaultLXMDConfigText()
         case .rns:
-            return engine.defaultRNSConfigText(logLevel: 3)
+            return engine.defaultRNSConfigText()
         }
     }
 
@@ -475,23 +344,7 @@ final class AppStore: ObservableObject {
     }
 
     func refreshConfiguredInterfaces() {
-        let json = engine.configuredInterfacesJSON()
-        lastConfiguredInterfacesJSON = json
-        if json.isEmpty {
-            configuredInterfaces = []
-            lastConfiguredInterfacesError = "runcore_configured_interfaces_json returned NULL"
-            return
-        }
-        do {
-            let data = json.data(using: .utf8) ?? Data()
-            let snapshot = try JSONDecoder().decode(ConfiguredInterfacesSnapshot.self, from: data)
-            configuredInterfaces = snapshot.interfaces
-            lastConfiguredInterfacesError = snapshot.error
-        } catch {
-            appendLog("failed to parse configured interfaces: \(error)")
-            configuredInterfaces = []
-            lastConfiguredInterfacesError = String(describing: error)
-        }
+        configuredInterfaces = []
     }
 
     func refreshAnnounces() {
@@ -500,7 +353,7 @@ final class AppStore: ObservableObject {
         lastAnnouncesJSON = json
         if json.isEmpty {
             announces = []
-            lastAnnouncesError = "runcore_announces_json returned NULL"
+            lastAnnouncesError = "announces.json is empty/missing"
             return
         }
         do {
@@ -533,7 +386,6 @@ final class AppStore: ObservableObject {
             appendLog("set interface enabled failed rc=\(rc) name=\(name)")
         }
         refreshInterfaceStats()
-        refreshConfiguredInterfaces()
     }
 
     var selectedContact: Contact? {
@@ -555,11 +407,12 @@ final class AppStore: ObservableObject {
 
         Task.detached { [weak self] in
             guard let self else { return }
-            let info = self.engine.contactInfo(destHashHex: dest, timeoutMs: 2500)
+            let info = self.engine.contactInfoFromDisk(destHashHex: dest)
 
             if shouldResolveName,
                let resolved = info?.displayName?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !resolved.isEmpty {
+               !resolved.isEmpty
+            {
                 await MainActor.run {
                     guard let idx = self.contacts.firstIndex(where: { $0.id == contactID }) else { return }
                     self.contacts[idx].displayName = resolved
@@ -567,59 +420,14 @@ final class AppStore: ObservableObject {
                     self.appendLog("resolved contact name for \(dest): \(resolved)")
                 }
             }
-
-            let announcedAvatarHash = info?.avatar?.hashHex?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            let knownHash: String? = await MainActor.run {
-                self.contacts.first(where: { $0.id == contactID })?.avatarHashHex?.lowercased()
-            }
-            let alreadyHaveAvatar: Bool = await MainActor.run {
-                self.contacts.first(where: { $0.id == contactID })?.avatarData != nil
-            }
-
-            let shouldFetchAvatar: Bool = {
-                if let announcedAvatarHash, !announcedAvatarHash.isEmpty {
-                    return !(knownHash == announcedAvatarHash && alreadyHaveAvatar)
-                }
-                return !alreadyHaveAvatar
-            }()
-            if !shouldFetchAvatar {
-                return
-            }
-
-            let resp = self.engine.contactAvatar(destHashHex: dest, knownHashHex: knownHash, timeoutMs: 20000)
-            if let err = resp?.error, !err.isEmpty {
-                await MainActor.run { self.appendLog("avatar fetch failed for \(dest): \(err)") }
-                return
-            }
-            if resp?.notPresent == true {
-                return
-            }
-            if resp?.unchanged == true {
-                await MainActor.run {
-                    guard let idx = self.contacts.firstIndex(where: { $0.id == contactID }) else { return }
-                    self.contacts[idx].avatarHashHex = resp?.hashHex ?? announcedAvatarHash
-                    self.save()
-                }
-                return
-            }
-            if let b64 = (resp?.dataBase64 ?? resp?.pngBase64),
-               let data = Data(base64Encoded: b64), !data.isEmpty {
-                await MainActor.run {
-                    guard let idx = self.contacts.firstIndex(where: { $0.id == contactID }) else { return }
-                    self.contacts[idx].avatarData = data
-                    self.contacts[idx].avatarHashHex = resp?.hashHex ?? announcedAvatarHash
-                    self.save()
-                    self.appendLog("fetched avatar for \(dest)")
-                }
-            }
         }
     }
 
-    func resolveContactDisplayName(destHashHex: String, timeoutMs: Int32 = 2500) async -> String? {
+    func resolveContactDisplayName(destHashHex: String, timeoutMs _: Int32 = 2500) async -> String? {
         let dest = destHashHex.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !dest.isEmpty else { return nil }
         return await Task.detached { [engine] in
-            guard let info = engine.contactInfo(destHashHex: dest, timeoutMs: timeoutMs) else { return nil }
+            guard let info = engine.contactInfoFromDisk(destHashHex: dest) else { return nil }
             let resolved = info.displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
             if let resolved, !resolved.isEmpty {
                 return resolved
@@ -628,36 +436,18 @@ final class AppStore: ObservableObject {
         }.value
     }
 
-    func resolveContactPreview(destHashHex: String, timeoutMs: Int32 = 2500) async -> ContactPreview? {
+    func resolveContactPreview(destHashHex: String, timeoutMs _: Int32 = 2500) async -> ContactPreview? {
         let dest = destHashHex.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !dest.isEmpty else { return nil }
         return await Task.detached { [engine] in
             var preview = ContactPreview()
-            let info = engine.contactInfo(destHashHex: dest, timeoutMs: timeoutMs)
+            let info = engine.contactInfoFromDisk(destHashHex: dest)
             if let name = info?.displayName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
                 preview.displayName = name
             }
             let announcedHash = info?.avatar?.hashHex?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             if let announcedHash, !announcedHash.isEmpty {
                 preview.avatarHashHex = announcedHash
-            }
-            let resp = engine.contactAvatar(destHashHex: dest, knownHashHex: nil, timeoutMs: 15000)
-            if let err = resp?.error, !err.isEmpty {
-                await MainActor.run {
-                    self.appendLog("avatar preview failed for \(dest): \(err)")
-                }
-            }
-            if resp == nil {
-                await MainActor.run {
-                    self.appendLog("avatar preview returned no response for \(dest)")
-                }
-            }
-            if let b64 = (resp?.dataBase64 ?? resp?.pngBase64),
-               let data = Data(base64Encoded: b64), !data.isEmpty {
-                preview.avatarData = data
-                if preview.avatarHashHex == nil {
-                    preview.avatarHashHex = resp?.hashHex?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                }
             }
             return preview
         }.value
@@ -697,14 +487,9 @@ final class AppStore: ObservableObject {
         messagesByContactID[contactID, default: []].append(msg)
         save()
         guard let contact = contacts.first(where: { $0.id == contactID }) else { return }
-        let dest = contact.destinationHashHex
-        let localMsgID = msg.id
-        Task.detached { [weak self] in
-            guard let self else { return }
-            let result = self.engine.sendResult(destHashHex: dest, title: "msg", content: text)
-            await MainActor.run {
-                self.updateOutboundMessage(contactID: contactID, localID: localMsgID, sendResult: result)
-            }
+        let ok = engine.enqueueSendText(destHashHex: contact.destinationHashHex, title: "msg", content: text)
+        if !ok {
+            appendLog("enqueue send failed")
         }
     }
 
@@ -720,139 +505,24 @@ final class AppStore: ObservableObject {
         }
         guard !ids.isEmpty else { return }
 
-        Task.detached { [weak self] in
-            guard let self else { return }
-            let result = self.engine.sendResult(destHashHex: dest, title: self.readReceiptTitle, content: ids.joined(separator: "\n"))
-            await MainActor.run {
-                if result.rc == 0 {
-                    self.markInboundReadReceiptsSent(contactID: contactID, messageIDs: ids)
-                    self.appendLog("read receipts sent to=\(dest) n=\(ids.count)")
-                } else {
-                    self.appendLog("read receipts send failed rc=\(result.rc) to=\(dest)")
-                }
-            }
-        }
-    }
-
-    private func updateOutboundMessage(contactID: UUID, localID: UUID, sendResult: RuncoreEngine.SendResult) {
-        guard var list = messagesByContactID[contactID] else { return }
-        guard let idx = list.firstIndex(where: { $0.id == localID }) else { return }
-
-        let dest = contacts.first(where: { $0.id == contactID })?.destinationHashHex ?? ""
-        list[idx].outboundAttemptCount += 1
-        list[idx].lastOutboundAttemptAt = Date()
-        if sendResult.rc == 0 {
-            let mid = (sendResult.messageIDHex ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            list[idx].lxmfMessageIDHex = mid.isEmpty ? nil : mid
-            list[idx].outboundStatus = .pending
-            messagesByContactID[contactID] = list
-            save()
-            appendLog("send queued to=\(dest)")
+        let ok = engine.enqueueSendText(destHashHex: dest, title: readReceiptTitle, content: ids.joined(separator: "\n"))
+        if ok {
+            markInboundReadReceiptsSent(contactID: contactID, messageIDs: ids)
+            appendLog("read receipts queued to=\(dest) n=\(ids.count)")
         } else {
-            // Retry later; only count hard failures (not "no path"/"no identity").
-            if sendResult.rc != 3 && sendResult.rc != 4 {
-                list[idx].outboundFailureCount += 1
-            }
-            if list[idx].outboundFailureCount >= 6 {
-                list[idx].outboundStatus = .failed
-            } else {
-                list[idx].outboundStatus = .pending
-            }
-            messagesByContactID[contactID] = list
-            save()
-            let suffix = (sendResult.error?.isEmpty == false) ? " err=\(sendResult.error!)" : ""
-            appendLog("send pending rc=\(sendResult.rc) to=\(dest)\(suffix)")
+            appendLog("read receipts enqueue failed to=\(dest)")
         }
     }
 
     private func retryPendingOutboundIfNeeded() {
-        for contact in contacts {
-            guard var list = messagesByContactID[contact.id] else { continue }
-            guard let idx = list.firstIndex(where: { msg in
-                msg.direction == .outbound &&
-                    msg.outboundStatus == .pending &&
-                    normalizeDestinationHashHex(msg.lxmfMessageIDHex ?? "").isEmpty &&
-                    msg.outboundFailureCount < 6 &&
-                    !outboundRetryInFlight.contains(msg.id)
-            }) else { continue }
-
-            let msgID = list[idx].id
-            let now = Date()
-            let backoff = min(pow(2.0, Double(max(0, list[idx].outboundAttemptCount))) * 1.5, 30.0)
-            if let last = list[idx].lastOutboundAttemptAt, now.timeIntervalSince(last) < backoff {
-                continue
-            }
-
-            outboundRetryInFlight.insert(msgID)
-            let text = list[idx].text
-            let title = list[idx].title
-            messagesByContactID[contact.id] = list
-
-            Task.detached { [weak self] in
-                guard let self else { return }
-                let result = self.engine.sendResult(destHashHex: contact.destinationHashHex, title: title, content: text)
-                await MainActor.run {
-                    self.updateOutboundMessage(contactID: contact.id, localID: msgID, sendResult: result)
-                    self.outboundRetryInFlight.remove(msgID)
-                }
-            }
-
-            // Do one retry per tick to avoid spamming.
-            return
-        }
+        // Retry is handled by re-placing files into the send folder if needed.
     }
 
     private func retryPendingOutboundNow(destHashHex: String) {
-        let dest = normalizeDestinationHashHex(destHashHex)
-        guard let contact = contacts.first(where: { $0.destinationHashHex == dest }) else { return }
-        guard var list = messagesByContactID[contact.id] else { return }
-        guard let idx = list.firstIndex(where: { msg in
-            msg.direction == .outbound &&
-                msg.outboundStatus == .pending &&
-                normalizeDestinationHashHex(msg.lxmfMessageIDHex ?? "").isEmpty &&
-                msg.outboundFailureCount < 6 &&
-                !outboundRetryInFlight.contains(msg.id)
-        }) else { return }
-
-        let msgID = list[idx].id
-        outboundRetryInFlight.insert(msgID)
-        let text = list[idx].text
-        let title = list[idx].title
-        messagesByContactID[contact.id] = list
-
-        Task.detached { [weak self] in
-            guard let self else { return }
-            let result = self.engine.sendResult(destHashHex: dest, title: title, content: text)
-            await MainActor.run {
-                self.updateOutboundMessage(contactID: contact.id, localID: msgID, sendResult: result)
-                self.outboundRetryInFlight.remove(msgID)
-            }
-        }
+        _ = destHashHex
     }
 
-    private func applyOutboundStatus(destHashHex: String, messageIDHex: String, state: Int32) {
-        let dest = normalizeDestinationHashHex(destHashHex)
-        let mid = normalizeDestinationHashHex(messageIDHex)
-        guard !dest.isEmpty, !mid.isEmpty else { return }
-        guard let contact = contacts.first(where: { $0.destinationHashHex == dest }) else { return }
-        guard var list = messagesByContactID[contact.id] else { return }
-        guard let idx = list.firstIndex(where: { $0.direction == .outbound && normalizeDestinationHashHex($0.lxmfMessageIDHex ?? "") == mid }) else {
-            return
-        }
-
-        switch state {
-        case 0x08: // delivered
-            if list[idx].outboundStatus != .read {
-                list[idx].outboundStatus = .delivered
-            }
-        case 0xFD, 0xFE, 0xFF: // rejected/cancelled/failed
-            list[idx].outboundStatus = .failed
-        default:
-            break
-        }
-        messagesByContactID[contact.id] = list
-        save()
-    }
+    // Outbound message status is tracked via xattr on message files in the messages folder.
 
     private func applyReadReceipt(from srcHashHex: String, content: String) {
         let src = normalizeDestinationHashHex(srcHashHex)
@@ -966,7 +636,7 @@ final class AppStore: ObservableObject {
     }
 
     private func loadMessagesFromLXMF() {
-        guard let base = engine.lxmfDirectoryURL else { return }
+        guard let base = engine.configDirectoryURL else { return }
         let fm = FileManager.default
         guard let folders = try? fm.contentsOfDirectory(at: base, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { return }
         for folder in folders where folder.hasDirectoryPath {
@@ -982,7 +652,7 @@ final class AppStore: ObservableObject {
     }
 
     private func persistMessagesToLXMF() {
-        guard let base = engine.lxmfDirectoryURL else { return }
+        guard let base = engine.configDirectoryURL else { return }
         for contact in contacts {
             let dest = normalizeDestinationHashHex(contact.destinationHashHex)
             guard !dest.isEmpty else { continue }
@@ -1074,7 +744,7 @@ final class AppStore: ObservableObject {
     }
 
     private var pendingAttachmentsRoot: URL? {
-        guard let base = engine.lxmfDirectoryURL else { return nil }
+        guard let base = engine.configDirectoryURL else { return nil }
         return base.appendingPathComponent(".pending", isDirectory: true)
     }
 
@@ -1105,7 +775,8 @@ final class AppStore: ObservableObject {
         var metas: [MessageFileMetadata] = []
         for entry in entries where entry.pathExtension == "meta" {
             if let data = try? Data(contentsOf: entry),
-               let meta = try? decoder.decode(MessageFileMetadata.self, from: data) {
+               let meta = try? decoder.decode(MessageFileMetadata.self, from: data)
+            {
                 metas.append(meta)
             }
         }
@@ -1259,14 +930,14 @@ final class AppStore: ObservableObject {
             contacts.append(contact)
             contactID = contact.id
         }
-            if let idx = contacts.firstIndex(where: { $0.id == contactID }) {
-                if let inboundPromptAvatarData {
+        if let idx = contacts.firstIndex(where: { $0.id == contactID }) {
+            if let inboundPromptAvatarData {
                 contacts[idx].avatarData = inboundPromptAvatarData
-                }
-                if let inboundPromptAvatarHashHex {
-                    contacts[idx].avatarHashHex = inboundPromptAvatarHashHex
-                }
             }
+            if let inboundPromptAvatarHashHex {
+                contacts[idx].avatarHashHex = inboundPromptAvatarHashHex
+            }
+        }
         messagesByContactID[contactID, default: []].append(
             ChatMessage(direction: .inbound, text: prompt.content, title: prompt.title, lxmfMessageIDHex: prompt.messageIDHex)
         )
@@ -1316,7 +987,7 @@ final class AppStore: ObservableObject {
 
         inboundPromptIsLoadingAvatar = true
         inboundAvatarTask = Task { @MainActor in
-            let preview = await resolveContactPreview(destHashHex: dest, timeoutMs: 20_000)
+            let preview = await resolveContactPreview(destHashHex: dest, timeoutMs: 20000)
             guard inboundPrompt?.id == promptID else { return }
 
             let resolvedName = preview?.displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1356,13 +1027,6 @@ struct InterfaceStatsSnapshot: Decodable, Equatable {
     let error: String?
 
     static let empty = InterfaceStatsSnapshot(interfaces: [], error: nil)
-}
-
-struct ConfiguredInterfacesSnapshot: Decodable, Equatable {
-    let interfaces: [ConfiguredInterface]
-    let error: String?
-
-    static let empty = ConfiguredInterfacesSnapshot(interfaces: [], error: nil)
 }
 
 struct ConfiguredInterface: Decodable, Identifiable, Equatable {
@@ -1426,7 +1090,7 @@ private final class ContactDiskStorage {
     init?(rootURL: URL?) {
         guard let url = rootURL else { return nil }
         self.rootURL = url
-        self.fileManager = FileManager.default
+        fileManager = FileManager.default
     }
 
     func loadEntries() throws -> [DiskContactEntry] {
@@ -1565,18 +1229,18 @@ private final class ContactDiskStorage {
             dir.appendingPathComponent("avatar.jpg"),
             dir.appendingPathComponent("avatar.jpeg"),
             dir.appendingPathComponent("avatar.heic"),
-            dir.appendingPathComponent("avatar.bin")
+            dir.appendingPathComponent("avatar.bin"),
         ]
     }
 
     private func avatarExtension(for data: Data) -> String {
-        if data.starts(with: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) {
+        if data.starts(with: [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) {
             return ".png"
         }
-        if data.starts(with: [0xff, 0xd8, 0xff]) {
+        if data.starts(with: [0xFF, 0xD8, 0xFF]) {
             return ".jpg"
         }
-        if data.count >= 12, let header = String(data: data[4..<8], encoding: .ascii), header == "ftyp" {
+        if data.count >= 12, let header = String(data: data[4 ..< 8], encoding: .ascii), header == "ftyp" {
             return ".heic"
         }
         return ".bin"
@@ -1614,6 +1278,6 @@ private extension Data {
     }
 }
 
-fileprivate func normalizeDestinationHashHex(_ value: String) -> String {
+private func normalizeDestinationHashHex(_ value: String) -> String {
     value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 }

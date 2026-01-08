@@ -10,11 +10,11 @@ require (
 
 replace github.com/svanichkin/go-reticulum => ../go-reticulum
 
-
 require (
 	github.com/JuulLabs-OSS/cbgo v0.0.1 // indirect
 	github.com/creack/goselect v0.1.2 // indirect
 	github.com/dsnet/compress v0.0.1 // indirect
+	github.com/fsnotify/fsnotify v1.7.0 // indirect
 	github.com/go-ble/ble v0.0.0-20240122180141-8c5522f54333 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
 	github.com/godbus/dbus/v5 v5.1.0 // indirect

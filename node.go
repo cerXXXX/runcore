@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/svanichkin/configobj"
 	"github.com/svanichkin/go-lxmf/lxmf"
 	"github.com/svanichkin/go-reticulum/rns"
@@ -29,9 +30,13 @@ type Options struct {
 	// If empty, runcore generates an inline config under Dir.
 	RNSConfigDir string
 
-	// Dir is runcore's own state directory (identity + LXMF storage).
+	// Dir is runcore's state directory (config, identity, LXMF storage, Reticulum config, contacts, attachments).
 	// If empty, defaults to "./.runcore".
 	Dir string
+
+	// MessagesDir is a directory for inbound/outbound LXMF message files (messages).
+	// Defaults to "<Dir>/storage/messages".
+	MessagesDir string
 
 	// ContactsDir is a directory for contacts-related app data.
 	// If empty, defaults to "<Dir>/contacts".
@@ -53,9 +58,6 @@ type Options struct {
 	// DeliveryStampCost sets inbound stamp cost for this node (nil = no requirement).
 	DeliveryStampCost *int
 
-	// ResetLXMFState removes LXMF transient state (eg ratchets) before starting.
-	ResetLXMFState bool
-
 	// ResetRNSConfig overwrites generated Dir/rns/config with the embedded template.
 	// Has no effect if RNSConfigDir is set.
 	ResetRNSConfig bool
@@ -70,6 +72,7 @@ type Node struct {
 	storageDir  string
 	contactsDir string
 	sendDir     string
+	messagesDir string
 	meDirMu     sync.RWMutex
 	meDir       string
 
@@ -80,6 +83,9 @@ type Node struct {
 	announceMu      sync.Mutex
 	announces       map[string]AnnounceEntry
 	announceHandler *announceLogger
+
+	outboundMu       sync.Mutex
+	outboundMsgFiles map[string]string // msgIDHex -> absolute path in messagesDir
 
 	displayName      string
 	avatarPNG        []byte
@@ -129,17 +135,19 @@ func Start(opts Options) (*Node, error) {
 	if err := os.MkdirAll(opts.Dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create runcore dir: %w", err)
 	}
-	if _, err := EnsureLXMDConfigWithDisplayName(opts.Dir, opts.DisplayName); err != nil {
+	if _, err := EnsureLXMDConfigWithDisplayName(opts.Dir, ""); err != nil {
 		return nil, fmt.Errorf("ensure lxmd config: %w", err)
 	}
 	storageDir := filepath.Join(opts.Dir, "storage")
 	if err := os.MkdirAll(storageDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create storage dir: %w", err)
 	}
-	if opts.ResetLXMFState {
-		_ = os.RemoveAll(filepath.Join(storageDir, "ratchets"))
+	if opts.MessagesDir == "" {
+		opts.MessagesDir = filepath.Join(storageDir, "messages")
 	}
-
+	if err := os.MkdirAll(opts.MessagesDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create messages dir: %w", err)
+	}
 	rnsConfigDir, err := prepareRNSConfigDir(opts)
 	if err != nil {
 		return nil, err
@@ -170,26 +178,16 @@ func Start(opts Options) (*Node, error) {
 		return nil, fmt.Errorf("stat identity: %w", err)
 	}
 
-	router, err := lxmf.NewLXMRouter(id, storageDir)
-	if err != nil {
-		return nil, fmt.Errorf("start lxmf router: %w", err)
-	}
-
-	delivery := router.RegisterDeliveryIdentity(id, opts.DisplayName, opts.DeliveryStampCost)
-	if delivery == nil {
-		return nil, errors.New("register delivery identity failed")
-	}
-
 	n := &Node{
-		opts:           opts,
-		reticulum:      ret,
-		identity:       id,
-		router:         router,
-		deliveryDestIn: delivery,
-		storageDir:     storageDir,
-		displayName:    opts.DisplayName,
-		announces:      make(map[string]AnnounceEntry),
-		ifaceOfflineAt: make(map[string]time.Time),
+		opts:             opts,
+		reticulum:        ret,
+		identity:         id,
+		storageDir:       storageDir,
+		displayName:      opts.DisplayName,
+		announces:        make(map[string]AnnounceEntry),
+		ifaceOfflineAt:   make(map[string]time.Time),
+		messagesDir:      opts.MessagesDir,
+		outboundMsgFiles: make(map[string]string),
 	}
 
 	if n.opts.ContactsDir == "" {
@@ -206,11 +204,28 @@ func Start(opts Options) (*Node, error) {
 	} else if strings.TrimSpace(n.displayName) == "" {
 		n.displayName = "Me"
 	}
+	_ = UpdateLXMFDisplayName(opts.Dir, n.displayName)
+
+	router, err := lxmf.NewLXMRouter(id, storageDir)
+	if err != nil {
+		return nil, fmt.Errorf("start lxmf router: %w", err)
+	}
+
+	delivery := router.RegisterDeliveryIdentity(id, n.displayName, opts.DeliveryStampCost)
+	if delivery == nil {
+		router.ExitHandler()
+		return nil, errors.New("register delivery identity failed")
+	}
+	n.router = router
+	n.deliveryDestIn = delivery
+
+	n.sendDir = strings.TrimSpace(n.opts.SendDir)
+	n.ensureAnnounceStorageDir()
+	n.loadAnnouncesFromDisk()
+
 	if err := n.ensureMeLXMFFile(); err != nil {
 		rns.Logf(rns.LOG_WARNING, "ensure me lxmf file: %v", err)
 	}
-
-	n.sendDir = strings.TrimSpace(n.opts.SendDir)
 
 	// Load optional avatar from disk (app-managed).
 	_ = n.loadAvatarFromDisk()
@@ -219,14 +234,21 @@ func Start(opts Options) (*Node, error) {
 	}
 	n.initAnnounceHandler()
 	router.RegisterDeliveryCallback(func(m *lxmf.LXMessage) {
-		if n.onInbound != nil && m != nil {
+		if m == nil {
+			return
+		}
+		n.persistInboundMessage(m)
+		if n.onInbound != nil {
 			n.onInbound(m)
 		}
 	})
 
 	// Best-effort periodic announce (helps peers discover us even if multicast is flaky).
 	n.startPeriodicAnnounce(60 * time.Second)
+	n.startStateWatchdog()
+	n.startSendWatchdog()
 	n.startInterfaceWatchdog()
+	n.AnnounceDeliveryWithReason("start")
 	return n, nil
 }
 
@@ -236,7 +258,8 @@ func (n *Node) Router() *lxmf.LXMRouter   { return n.router }
 func (n *Node) DeliveryDestination() *rns.Destination {
 	return n.deliveryDestIn
 }
-func (n *Node) ConfigDir() string { return n.opts.Dir }
+func (n *Node) ConfigDir() string   { return n.opts.Dir }
+func (n *Node) MessagesDir() string { return n.messagesDir }
 
 // InterfaceStatsJSON returns JSON-encoded Reticulum interface stats (mirrors rns.GetInterfaceStats()).
 func (n *Node) InterfaceStatsJSON() string {
@@ -358,9 +381,17 @@ func (n *Node) SetInterfaceEnabled(name string, enabled bool) error {
 		// Reload is more robust than Resume() here:
 		// - works even if the interface is already running (reconnects TCP client interfaces)
 		// - re-creates the driver instance after a halt/resume toggle
-		return n.reticulum.ReloadInterface(name)
+		if err := n.reticulum.ReloadInterface(name); err != nil {
+			return err
+		}
+		n.AnnounceDeliveryWithReason("interface_enabled")
+		return nil
 	}
-	return n.reticulum.HaltInterface(name)
+	if err := n.reticulum.HaltInterface(name); err != nil {
+		return err
+	}
+	n.AnnounceDeliveryWithReason("interface_disabled")
+	return nil
 }
 
 func ternaryString(cond bool, t, f string) string {
@@ -408,7 +439,11 @@ func (n *Node) Restart() error {
 	n.deliveryDestIn = delivery
 
 	router.RegisterDeliveryCallback(func(m *lxmf.LXMessage) {
-		if n.onInbound != nil && m != nil {
+		if m == nil {
+			return
+		}
+		n.persistInboundMessage(m)
+		if n.onInbound != nil {
 			n.onInbound(m)
 		}
 	})
@@ -486,6 +521,13 @@ func (n *Node) SendHex(destinationHashHex string, msg SendOptions) (*lxmf.LXMess
 	}
 
 	n.router.HandleOutbound(lxm)
+	// Track status transitions to xattr on message files (if a file is registered).
+	lxm.RegisterDeliveryCallback(func(m *lxmf.LXMessage) {
+		n.setMessageFileStateByMsgID(msgIDHex(m), m.State)
+	})
+	lxm.RegisterFailedCallback(func(m *lxmf.LXMessage) {
+		n.setMessageFileStateByMsgID(msgIDHex(m), m.State)
+	})
 	return lxm, nil
 }
 
@@ -954,6 +996,150 @@ func (n *Node) startPeriodicAnnounce(interval time.Duration) {
 	}()
 }
 
+func (n *Node) startStateWatchdog() {
+	if n == nil {
+		return
+	}
+	if n.announceStop == nil {
+		n.announceStop = make(chan struct{})
+	}
+
+	type snapshot struct {
+		meDir          string
+		name           string
+		avatarHashHex  string
+		avatarInit     bool
+		configMTime    int64
+		rnsConfigMTime int64
+	}
+
+	go func() {
+		var st snapshot
+		configPath := filepath.Join(n.opts.Dir, "config")
+		rnsConfigPath := filepath.Join(n.opts.Dir, "rns", "config")
+		rnsDir := filepath.Dir(rnsConfigPath)
+
+		scan := func() {
+			// Track rename of contacts/<me> (xattr-tagged) and announce when it changes.
+			if dir, err := n.findMeContactDir(); err == nil && dir != "" {
+				name := filepath.Base(dir)
+				if st.meDir == "" {
+					st.meDir = dir
+					st.name = name
+				}
+				if dir != st.meDir || (name != "" && name != st.name) {
+					st.meDir = dir
+					st.name = name
+					if name != "" && name != n.displayName {
+						n.displayName = name
+						_ = UpdateLXMFDisplayName(n.opts.Dir, n.displayName)
+						_ = n.ensureMeLXMFFile()
+						n.AnnounceDeliveryWithReason("display_name_changed")
+					}
+				}
+			}
+
+			// Track avatar changes on disk and announce when changed.
+			n.refreshAvatarFromDisk()
+			newAvatar := hex.EncodeToString(n.avatarHash)
+			if !st.avatarInit {
+				st.avatarHashHex = newAvatar
+				st.avatarInit = true
+			} else if newAvatar != st.avatarHashHex {
+				st.avatarHashHex = newAvatar
+				n.AnnounceDeliveryWithReason("avatar_changed")
+			}
+
+			// Track config changes (best-effort) and announce when modified.
+			if info, err := os.Stat(configPath); err == nil {
+				mt := info.ModTime().Unix()
+				if st.configMTime == 0 {
+					st.configMTime = mt
+				} else if mt != st.configMTime {
+					st.configMTime = mt
+					n.AnnounceDeliveryWithReason("config_changed")
+				}
+			}
+			if info, err := os.Stat(rnsConfigPath); err == nil {
+				mt := info.ModTime().Unix()
+				if st.rnsConfigMTime == 0 {
+					st.rnsConfigMTime = mt
+				} else if mt != st.rnsConfigMTime {
+					st.rnsConfigMTime = mt
+					n.AnnounceDeliveryWithReason("rns_config_changed")
+				}
+			}
+		}
+
+		// Prefer fsnotify; fallback to polling if watcher cannot start.
+		w, err := fsnotify.NewWatcher()
+		if err != nil {
+			t := time.NewTicker(10 * time.Second)
+			defer t.Stop()
+			for {
+				select {
+				case <-t.C:
+					scan()
+				case <-n.announceStop:
+					return
+				}
+			}
+		}
+		defer w.Close()
+
+		// Watch directories (watching files directly is less portable).
+		_ = w.Add(n.contactsDir)
+		_ = w.Add(n.opts.Dir)
+		_ = w.Add(rnsDir)
+
+		var debounceMu sync.Mutex
+		var debounce *time.Timer
+		trigger := func() {
+			debounceMu.Lock()
+			defer debounceMu.Unlock()
+			if debounce != nil {
+				debounce.Stop()
+			}
+			debounce = time.AfterFunc(500*time.Millisecond, scan)
+		}
+
+		// Initial scan so state is consistent (and we don't announce spuriously).
+		scan()
+
+		for {
+			select {
+			case <-n.announceStop:
+				return
+			case _, ok := <-w.Events:
+				if !ok {
+					return
+				}
+				trigger()
+			case _, ok := <-w.Errors:
+				if !ok {
+					return
+				}
+				// Watcher errors are common on some FS (notably iCloud); we still keep a light poll.
+				t := time.NewTicker(15 * time.Second)
+				for {
+					select {
+					case <-t.C:
+						scan()
+					case <-n.announceStop:
+						t.Stop()
+						return
+					case _, ok := <-w.Errors:
+						if !ok {
+							t.Stop()
+							return
+						}
+					}
+				}
+			}
+		}
+	}()
+}
+
 // SetDisplayName renames the "me" contact folder and updates the profile name.
 func (n *Node) SetDisplayName(name string) error {
 	if n == nil || n.deliveryDestIn == nil {
@@ -969,6 +1155,9 @@ func (n *Node) SetDisplayName(name string) error {
 		n.meDir = dir
 		n.meDirMu.Unlock()
 	}
+	_ = UpdateLXMFDisplayName(n.opts.Dir, n.displayName)
+	_ = n.ensureMeLXMFFile()
+	n.AnnounceDeliveryWithReason("display_name_changed")
 	return nil
 }
 
@@ -1016,7 +1205,22 @@ func (n *Node) ClearAvatar() error {
 	return nil
 }
 
+func (n *Node) refreshAvatarFromDisk() {
+	if n == nil {
+		return
+	}
+	if err := n.loadAvatarFromDisk(); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			n.avatarPNG = nil
+			n.avatarHash = nil
+			n.avatarMTime = 0
+			n.avatarMime = ""
+		}
+	}
+}
+
 func (n *Node) announceAppData() []byte {
+	n.refreshAvatarFromDisk()
 	// Mirrors lxmf.Router.GetAnnounceAppData(): msgpack([display_name_bytes, stamp_cost?])
 	var displayNameBytes []byte
 	if n.displayName != "" {

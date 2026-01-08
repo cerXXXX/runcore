@@ -3,47 +3,29 @@ package main
 /*
 #include <stdint.h>
  #include <stdlib.h>
-typedef void (*runcore_inbound_cb)(void* user_data, const char* src_hash_hex, const char* msg_id_hex, const char* title, const char* content);
 typedef void (*runcore_log_cb)(void* user_data, int32_t level, const char* line);
-typedef void (*runcore_message_status_cb)(void* user_data, const char* dest_hash_hex, const char* msg_id_hex, int32_t state);
 
-static inline void runcore_inbound_cb_call(runcore_inbound_cb cb, void* user_data, const char* src, const char* msg_id, const char* title, const char* content) {
-  cb(user_data, src, msg_id, title, content);
-}
 static inline void runcore_log_cb_call(runcore_log_cb cb, void* user_data, int32_t level, const char* line) {
   cb(user_data, level, line);
-}
-static inline void runcore_message_status_cb_call(runcore_message_status_cb cb, void* user_data, const char* dest, const char* msg_id, int32_t state) {
-  cb(user_data, dest, msg_id, state);
 }
 */
 import "C"
 
 import (
-	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 	"unsafe"
 
-	"github.com/svanichkin/go-lxmf/lxmf"
 	"github.com/svanichkin/go-reticulum/rns"
 
 	"runcore"
 )
 
 type nodeHandle struct {
-	node     *runcore.Node
-	destHex  *C.char
-	cb       C.runcore_inbound_cb
-	userData unsafe.Pointer
-	statusCB C.runcore_message_status_cb
-	statusUD unsafe.Pointer
-	mu       sync.RWMutex
+	node *runcore.Node
 }
 
 var (
@@ -73,86 +55,45 @@ func runcore_default_lxmd_config() *C.char {
 	return allocCString(runcore.DefaultLXMDConfigText(""))
 }
 
-//export runcore_default_lxmd_config_for_name
-func runcore_default_lxmd_config_for_name(displayName *C.char) *C.char {
-	name := ""
-	if displayName != nil {
-		name = C.GoString(displayName)
-	}
-	return allocCString(runcore.DefaultLXMDConfigText(name))
-}
+const defaultRNSConfigLogLevel = 4
 
 //export runcore_default_rns_config
-func runcore_default_rns_config(loglevel C.int32_t) *C.char {
-	return allocCString(runcore.DefaultRNSConfigText(int(loglevel)))
+func runcore_default_rns_config() *C.char {
+	return allocCString(runcore.DefaultRNSConfigText(defaultRNSConfigLogLevel))
 }
 
 //export runcore_start
-func runcore_start(contactsDir *C.char, lxmfDir *C.char, sendDir *C.char, displayName *C.char, loglevel C.int32_t, resetLXMF C.int32_t) C.uint64_t {
+func runcore_start(contactsDir *C.char, sendDir *C.char, messagesDir *C.char, loglevel C.int32_t) C.uint64_t {
 	contacts := ""
 	if contactsDir != nil {
 		contacts = C.GoString(contactsDir)
-	}
-	dir := ""
-	if lxmfDir != nil {
-		dir = C.GoString(lxmfDir)
 	}
 	send := ""
 	if sendDir != nil {
 		send = C.GoString(sendDir)
 	}
-	name := ""
-	if displayName != nil {
-		name = C.GoString(displayName)
+	messages := ""
+	if messagesDir != nil {
+		messages = C.GoString(messagesDir)
 	}
 	level := int(loglevel)
-	reset := resetLXMF != 0
 
 	checkDirReadableWritable(contacts)
-	checkDirReadableWritable(dir)
 	checkDirReadableWritable(send)
+	checkDirReadableWritable(messages)
 
 	n, err := runcore.Start(runcore.Options{
-		Dir:            dir,
-		ContactsDir:    contacts,
-		SendDir:        send,
-		DisplayName:    name,
-		LogLevel:       level,
-		ResetLXMFState: reset,
+		Dir:         "",
+		ContactsDir: contacts,
+		SendDir:     send,
+		MessagesDir: messages,
+		LogLevel:    level,
 	})
 	if err != nil {
 		return 0
 	}
 
 	h := &nodeHandle{node: n}
-	h.destHex = allocCString(n.DestinationHashHex())
-
-	n.SetInboundHandler(func(m *lxmf.LXMessage) {
-		if m == nil {
-			return
-		}
-		h.mu.RLock()
-		cb := h.cb
-		ud := h.userData
-		h.mu.RUnlock()
-		if cb == nil {
-			return
-		}
-		src := hex.EncodeToString(m.SourceHash)
-		msgID := hex.EncodeToString(m.MessageID)
-		if msgID == "" && len(m.Hash) > 0 {
-			msgID = hex.EncodeToString(m.Hash)
-		}
-		cSrc := allocCString(src)
-		cMsgID := allocCString(msgID)
-		cTitle := allocCString(m.TitleAsString())
-		cContent := allocCString(m.ContentAsString())
-		C.runcore_inbound_cb_call(cb, ud, cSrc, cMsgID, cTitle, cContent)
-		C.free(unsafe.Pointer(cSrc))
-		C.free(unsafe.Pointer(cMsgID))
-		C.free(unsafe.Pointer(cTitle))
-		C.free(unsafe.Pointer(cContent))
-	})
 
 	nodesMu.Lock()
 	id := nextID
@@ -201,48 +142,7 @@ func runcore_stop(handle C.uint64_t) C.int32_t {
 		return 0
 	}
 	_ = h.node.Close()
-	if h.destHex != nil {
-		C.free(unsafe.Pointer(h.destHex))
-		h.destHex = nil
-	}
 	return 0
-}
-
-//export runcore_profile_name
-func runcore_profile_name(handle C.uint64_t) *C.char {
-	h := getHandle(handle)
-	if h == nil || h.node == nil {
-		return nil
-	}
-	name := h.node.ProfileName()
-	if name == "" {
-		return nil
-	}
-	return allocCString(name)
-}
-
-//export runcore_set_inbound_cb
-func runcore_set_inbound_cb(handle C.uint64_t, cb C.runcore_inbound_cb, userData unsafe.Pointer) {
-	h := getHandle(handle)
-	if h == nil {
-		return
-	}
-	h.mu.Lock()
-	h.cb = cb
-	h.userData = userData
-	h.mu.Unlock()
-}
-
-//export runcore_set_message_status_cb
-func runcore_set_message_status_cb(handle C.uint64_t, cb C.runcore_message_status_cb, userData unsafe.Pointer) {
-	h := getHandle(handle)
-	if h == nil {
-		return
-	}
-	h.mu.Lock()
-	h.statusCB = cb
-	h.statusUD = userData
-	h.mu.Unlock()
 }
 
 //export runcore_set_log_cb
@@ -278,161 +178,13 @@ func runcore_set_loglevel(level C.int32_t) {
 	rns.SetLogLevel(int(level))
 }
 
-//export runcore_destination_hash_hex
-func runcore_destination_hash_hex(handle C.uint64_t) *C.char {
+//export runcore_config_dir
+func runcore_config_dir(handle C.uint64_t) *C.char {
 	h := getHandle(handle)
-	if h == nil {
+	if h == nil || h.node == nil {
 		return nil
 	}
-	return h.destHex
-}
-
-//export runcore_send
-func runcore_send(handle C.uint64_t, destHashHex *C.char, title *C.char, content *C.char) C.int32_t {
-	h := getHandle(handle)
-	if h == nil || h.node == nil {
-		return 1
-	}
-	dest := C.GoString(destHashHex)
-	destHash, err := hex.DecodeString(dest)
-	if err != nil || len(destHash) != lxmf.DestinationLength {
-		return 4
-	}
-	if !rns.TransportHasPath(destHash) {
-		// Do not fail fast: queue opportunistic send and let Reticulum establish a path.
-		rns.TransportRequestPath(destHash)
-	}
-	if !strings.EqualFold(dest, C.GoString(h.destHex)) && rns.IdentityRecall(destHash) == nil {
-		rns.TransportRequestPath(destHash)
-		return 3
-	}
-	_, err = h.node.SendHex(dest, runcore.SendOptions{
-		Method:  lxmf.MethodOpportunistic,
-		Title:   C.GoString(title),
-		Content: C.GoString(content),
-	})
-	if err != nil {
-		return 2
-	}
-	return 0
-}
-
-//export runcore_send_result_json
-func runcore_send_result_json(handle C.uint64_t, destHashHex *C.char, title *C.char, content *C.char) *C.char {
-	h := getHandle(handle)
-	if h == nil || h.node == nil {
-		return allocCString(`{"rc":1,"error":"node not started"}`)
-	}
-	dest := C.GoString(destHashHex)
-	destHash, err := hex.DecodeString(dest)
-	if err != nil || len(destHash) != lxmf.DestinationLength {
-		b, _ := json.Marshal(map[string]any{"rc": 5, "error": "invalid destination hash"})
-		return allocCString(string(b))
-	}
-	pathPending := false
-	if !rns.TransportHasPath(destHash) {
-		// Do not fail fast: queue opportunistic send and let Reticulum establish a path.
-		pathPending = true
-		rns.TransportRequestPath(destHash)
-	}
-	if !strings.EqualFold(dest, C.GoString(h.destHex)) && rns.IdentityRecall(destHash) == nil {
-		rns.TransportRequestPath(destHash)
-		b, _ := json.Marshal(map[string]any{"rc": 3, "error": "unknown destination identity"})
-		return allocCString(string(b))
-	}
-	msg, err := h.node.SendHex(dest, runcore.SendOptions{
-		Method:  lxmf.MethodOpportunistic,
-		Title:   C.GoString(title),
-		Content: C.GoString(content),
-	})
-	if err != nil || msg == nil {
-		b, _ := json.Marshal(map[string]any{"rc": 2, "error": fmt.Sprintf("send failed: %v", err)})
-		return allocCString(string(b))
-	}
-
-	// Attach callbacks for delivery/failed state transitions.
-	msg.RegisterDeliveryCallback(func(m *lxmf.LXMessage) {
-		if m == nil {
-			return
-		}
-		h.mu.RLock()
-		cb := h.statusCB
-		ud := h.statusUD
-		h.mu.RUnlock()
-		if cb == nil {
-			return
-		}
-		destHex := hex.EncodeToString(m.DestinationHash)
-		msgIDHex := hex.EncodeToString(m.MessageID)
-		if msgIDHex == "" && len(m.Hash) > 0 {
-			msgIDHex = hex.EncodeToString(m.Hash)
-		}
-		cDest := allocCString(destHex)
-		cMsgID := allocCString(msgIDHex)
-		C.runcore_message_status_cb_call(cb, ud, cDest, cMsgID, C.int32_t(m.State))
-		C.free(unsafe.Pointer(cDest))
-		C.free(unsafe.Pointer(cMsgID))
-	})
-	msg.RegisterFailedCallback(func(m *lxmf.LXMessage) {
-		if m == nil {
-			return
-		}
-		h.mu.RLock()
-		cb := h.statusCB
-		ud := h.statusUD
-		h.mu.RUnlock()
-		if cb == nil {
-			return
-		}
-		destHex := hex.EncodeToString(m.DestinationHash)
-		msgIDHex := hex.EncodeToString(m.MessageID)
-		if msgIDHex == "" && len(m.Hash) > 0 {
-			msgIDHex = hex.EncodeToString(m.Hash)
-		}
-		cDest := allocCString(destHex)
-		cMsgID := allocCString(msgIDHex)
-		C.runcore_message_status_cb_call(cb, ud, cDest, cMsgID, C.int32_t(m.State))
-		C.free(unsafe.Pointer(cDest))
-		C.free(unsafe.Pointer(cMsgID))
-	})
-
-	msgIDHex := hex.EncodeToString(msg.MessageID)
-	if msgIDHex == "" && len(msg.Hash) > 0 {
-		msgIDHex = hex.EncodeToString(msg.Hash)
-	}
-	resp := map[string]any{"rc": 0, "message_id_hex": msgIDHex}
-	if pathPending {
-		resp["path_pending"] = true
-	}
-	b, _ := json.Marshal(resp)
-	return allocCString(string(b))
-}
-
-//export runcore_announce
-func runcore_announce(handle C.uint64_t) C.int32_t {
-	h := getHandle(handle)
-	if h == nil || h.node == nil {
-		return 1
-	}
-	h.node.AnnounceDeliveryWithReason("ffi")
-	return 0
-}
-
-//export runcore_announce_with_reason
-func runcore_announce_with_reason(handle C.uint64_t, reason *C.char) C.int32_t {
-	h := getHandle(handle)
-	if h == nil || h.node == nil {
-		return 1
-	}
-	r := ""
-	if reason != nil {
-		r = C.GoString(reason)
-	}
-	if strings.TrimSpace(r) == "" {
-		r = "ffi"
-	}
-	h.node.AnnounceDeliveryWithReason(r)
-	return 0
+	return allocCString(h.node.ConfigDir())
 }
 
 //export runcore_set_display_name
@@ -460,11 +212,6 @@ func runcore_restart(handle C.uint64_t) C.int32_t {
 	if err := h.node.Restart(); err != nil {
 		return 2
 	}
-	if h.destHex != nil {
-		C.free(unsafe.Pointer(h.destHex))
-		h.destHex = nil
-	}
-	h.destHex = allocCString(h.node.DestinationHashHex())
 	return 0
 }
 
@@ -475,178 +222,6 @@ func runcore_interface_stats_json(handle C.uint64_t) *C.char {
 		return nil
 	}
 	return allocCString(h.node.InterfaceStatsJSON())
-}
-
-//export runcore_configured_interfaces_json
-func runcore_configured_interfaces_json(handle C.uint64_t) *C.char {
-	h := getHandle(handle)
-	if h == nil || h.node == nil {
-		return nil
-	}
-	return allocCString(h.node.ConfiguredInterfacesJSON())
-}
-
-//export runcore_announces_json
-func runcore_announces_json(handle C.uint64_t) *C.char {
-	h := getHandle(handle)
-	if h == nil || h.node == nil {
-		return nil
-	}
-	return allocCString(h.node.AnnouncesJSON())
-}
-
-//export runcore_contact_info_json
-func runcore_contact_info_json(handle C.uint64_t, destHashHex *C.char, timeoutMs C.int32_t) *C.char {
-	h := getHandle(handle)
-	if h == nil || h.node == nil || destHashHex == nil {
-		return nil
-	}
-	timeout := time.Duration(timeoutMs) * time.Millisecond
-	info, err := h.node.ContactInfoHex(C.GoString(destHashHex), timeout)
-	resp := map[string]any{
-		"display_name": info.DisplayName,
-		"avatar":       info.Avatar,
-	}
-	if err != nil {
-		resp["error"] = err.Error()
-	}
-	b, _ := json.Marshal(resp)
-	return allocCString(string(b))
-}
-
-//export runcore_contact_avatar_json
-func runcore_contact_avatar_json(handle C.uint64_t, destHashHex *C.char, knownAvatarHashHex *C.char, timeoutMs C.int32_t) *C.char {
-	h := getHandle(handle)
-	if h == nil || h.node == nil || destHashHex == nil {
-		return nil
-	}
-	known := ""
-	if knownAvatarHashHex != nil {
-		known = C.GoString(knownAvatarHashHex)
-	}
-	timeout := time.Duration(timeoutMs) * time.Millisecond
-	av, err := h.node.ContactAvatarDataBase64Hex(C.GoString(destHashHex), known, timeout)
-	resp := map[string]any{
-		"hash_hex":    av.HashHex,
-		"png_base64":  av.PNGBase64,
-		"mime":        av.Mime,
-		"unchanged":   av.Unchanged,
-		"not_present": av.NotPresent,
-	}
-	if err != nil {
-		resp["error"] = err.Error()
-	}
-	b, _ := json.Marshal(resp)
-	return allocCString(string(b))
-}
-
-//export runcore_store_attachment_json
-func runcore_store_attachment_json(handle C.uint64_t, mime *C.char, name *C.char, data *C.uchar, dataLen C.int32_t) *C.char {
-	h := getHandle(handle)
-	if h == nil || h.node == nil {
-		return allocCString(`{"rc":1,"error":"node not started"}`)
-	}
-	if data == nil || dataLen <= 0 {
-		return allocCString(`{"rc":2,"error":"empty attachment"}`)
-	}
-	m := ""
-	if mime != nil {
-		m = C.GoString(mime)
-	}
-	n := ""
-	if name != nil {
-		n = C.GoString(name)
-	}
-	b := C.GoBytes(unsafe.Pointer(data), C.int(dataLen))
-	info, err := h.node.StoreOutgoingAttachment(b, m, n)
-	resp := map[string]any{
-		"rc":       0,
-		"hash_hex": info.HashHex,
-		"mime":     info.Mime,
-		"name":     info.Name,
-		"size":     info.Size,
-		"updated":  info.Updated,
-	}
-	if err != nil {
-		resp["rc"] = 3
-		resp["error"] = err.Error()
-	}
-	jb, _ := json.Marshal(resp)
-	return allocCString(string(jb))
-}
-
-//export runcore_contact_attachment_json
-func runcore_contact_attachment_json(handle C.uint64_t, destHashHex *C.char, attachmentHashHex *C.char, timeoutMs C.int32_t) *C.char {
-	h := getHandle(handle)
-	if h == nil || h.node == nil || destHashHex == nil || attachmentHashHex == nil {
-		return nil
-	}
-	timeout := time.Duration(timeoutMs) * time.Millisecond
-	fetch, err := h.node.ContactAttachmentPathHex(C.GoString(destHashHex), C.GoString(attachmentHashHex), timeout)
-	resp := map[string]any{
-		"hash_hex":    fetch.HashHex,
-		"path":        fetch.Path,
-		"mime":        fetch.Mime,
-		"name":        fetch.Name,
-		"size":        fetch.Size,
-		"not_present": fetch.NotPresent,
-	}
-	if err != nil {
-		resp["error"] = err.Error()
-	}
-	jb, _ := json.Marshal(resp)
-	return allocCString(string(jb))
-}
-
-//export runcore_set_avatar_png
-func runcore_set_avatar_png(handle C.uint64_t, pngData *C.uchar, pngLen C.int32_t) C.int32_t {
-	h := getHandle(handle)
-	if h == nil || h.node == nil {
-		return 1
-	}
-	if pngData == nil || pngLen <= 0 {
-		return 2
-	}
-	b := C.GoBytes(unsafe.Pointer(pngData), C.int(pngLen))
-	if err := h.node.SetAvatarPNG(b); err != nil {
-		return 3
-	}
-	return 0
-}
-
-//export runcore_set_avatar_image
-func runcore_set_avatar_image(handle C.uint64_t, mime *C.char, data *C.uchar, dataLen C.int32_t) C.int32_t {
-	h := getHandle(handle)
-	if h == nil || h.node == nil {
-		return 1
-	}
-	if data == nil || dataLen <= 0 {
-		return 2
-	}
-	b := C.GoBytes(unsafe.Pointer(data), C.int(dataLen))
-	mt := ""
-	if mime != nil {
-		mt = C.GoString(mime)
-	}
-	if err := h.node.SetAvatarImage(mt, b); err != nil {
-		rns.Logf(rns.LOG_NOTICE, "set avatar image failed: %v", err)
-		return 3
-	}
-	h.node.AnnounceDeliveryWithReason("avatar_changed")
-	return 0
-}
-
-
-//export runcore_clear_avatar
-func runcore_clear_avatar(handle C.uint64_t) C.int32_t {
-	h := getHandle(handle)
-	if h == nil || h.node == nil {
-		return 1
-	}
-	if err := h.node.ClearAvatar(); err != nil {
-		return 2
-	}
-	return 0
 }
 
 //export runcore_set_interface_enabled

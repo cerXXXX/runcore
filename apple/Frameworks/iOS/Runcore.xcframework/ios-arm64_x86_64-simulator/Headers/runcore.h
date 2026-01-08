@@ -9,26 +9,6 @@ extern "C" {
 // Opaque handle to a running runcore node.
 typedef uint64_t runcore_handle_t;
 
-// Called on inbound message. Includes LXMF message_id (hex).
-// All strings are UTF-8, valid only for the duration of the call.
-typedef void (*runcore_inbound_cb)(
-    void* user_data,
-    const char* src_hash_hex,
-    const char* msg_id_hex,
-    const char* title,
-    const char* content
-);
-
-// Called on outbound message status updates.
-// `state` corresponds to lxmf.LXMessage.State (eg. 0x08 = delivered).
-// All strings are UTF-8, valid only for the duration of the call.
-typedef void (*runcore_message_status_cb)(
-    void* user_data,
-    const char* dest_hash_hex,
-    const char* msg_id_hex,
-    int32_t state
-);
-
 // Called for every internal log line. The line includes timestamp prefix.
 typedef void (*runcore_log_cb)(void* user_data, int32_t level, const char* line);
 
@@ -40,61 +20,28 @@ void runcore_set_loglevel(int32_t level);
 
 // Start Reticulum+LXMF node.
 // - contacts_dir: directory for contacts storage (iCloud Drive)
-// - lxmf_dir: directory reserved for future message/file storage in iCloud Drive
 // - send_dir: directory watched for outbound payloads (iCloud Drive; reserved for future use)
-// - display_name: optional (may be NULL/empty); used in announce metadata
+// - messages_dir: directory used for inbound/outbound LXMF message files
 // - loglevel: Reticulum log level 0..7
-// - reset_lxmf_state: if non-zero, remove ratchets before start
 // Returns 0 on failure.
-runcore_handle_t runcore_start(const char* contacts_dir, const char* lxmf_dir, const char* send_dir, const char* display_name, int32_t loglevel, int32_t reset_lxmf_state);
+runcore_handle_t runcore_start(const char* contacts_dir, const char* send_dir, const char* messages_dir, int32_t loglevel);
 
 // Persist state and stop (best-effort). Returns 0 on success.
 int32_t runcore_stop(runcore_handle_t handle);
 
-// Set inbound callback. Pass NULL to disable.
-void runcore_set_inbound_cb(runcore_handle_t handle, runcore_inbound_cb cb, void* user_data);
+// Outbound message statuses are reflected via xattr on message files.
 
-// Set outbound message status callback. Pass NULL to disable.
-void runcore_set_message_status_cb(runcore_handle_t handle, runcore_message_status_cb cb, void* user_data);
-
-// Returns this node's LXMF delivery destination hash as hex (32 chars).
-// The returned pointer is owned by the library and remains valid until runcore_stop().
-const char* runcore_destination_hash_hex(runcore_handle_t handle);
-
-// Returns the profile display name (aka "me" contact folder) if known.
+// Returns the active config dir used by the node (config, identity, storage, rns/config).
 // The returned pointer must be freed with runcore_free_string().
-char* runcore_profile_name(runcore_handle_t handle);
+char* runcore_config_dir(runcore_handle_t handle);
 
-// Send a message to `dest_hash_hex` (32 hex chars). Returns 0 on success.
-int32_t runcore_send(runcore_handle_t handle, const char* dest_hash_hex, const char* title, const char* content);
-
-// Send a message and return JSON with the message_id_hex (best-effort).
-// Response: {"rc":0,"message_id_hex":"...","error":"..."}.
-// The returned pointer must be freed with runcore_free_string().
-char* runcore_send_result_json(runcore_handle_t handle, const char* dest_hash_hex, const char* title, const char* content);
-
-// Announce this node's delivery destination. Returns 0 on success.
-int32_t runcore_announce(runcore_handle_t handle);
-
-// Announce this node's delivery destination with a reason string (for logging).
-// `reason` may be NULL/empty.
-// Returns 0 on success.
-int32_t runcore_announce_with_reason(runcore_handle_t handle, const char* reason);
+// Sending is done by writing into the send folder.
 
 // Update display_name used in announce app-data (does not restart the node). Returns 0 on success.
 int32_t runcore_set_display_name(runcore_handle_t handle, const char* display_name);
 
 // Restart the LXMF router (re-announce on restart). Returns 0 on success.
 int32_t runcore_restart(runcore_handle_t handle);
-
-// Set profile avatar PNG bytes (announced via app-data + available over /avatar). Returns 0 on success.
-int32_t runcore_set_avatar_png(runcore_handle_t handle, const unsigned char* png_data, int32_t png_len);
-
-// Set profile avatar bytes with explicit mime (eg. "image/heic").
-int32_t runcore_set_avatar_image(runcore_handle_t handle, const char* mime, const unsigned char* data, int32_t data_len);
-
-// Clear profile avatar. Returns 0 on success.
-int32_t runcore_clear_avatar(runcore_handle_t handle);
 
 // Free a C string allocated by the library (eg. runcore_interface_stats_json()).
 void runcore_free_string(char* p);
@@ -103,47 +50,17 @@ void runcore_free_string(char* p);
 // The returned pointer must be freed with runcore_free_string().
 char* runcore_default_lxmd_config(void);
 
-// Return the embedded default runcore (lxmd-style) config, using display_name.
-// The returned pointer must be freed with runcore_free_string().
-char* runcore_default_lxmd_config_for_name(const char* display_name);
-
 // Return the embedded default Reticulum config used for configDir/rns/config.
 // The returned pointer must be freed with runcore_free_string().
-char* runcore_default_rns_config(int32_t loglevel);
+char* runcore_default_rns_config(void);
 
 // Returns JSON with Reticulum interface stats (includes `interfaces` array with `name`, `type`, `status`, `rxb`, `txb`, etc).
 // The returned pointer must be freed with runcore_free_string().
 char* runcore_interface_stats_json(runcore_handle_t handle);
 
-// Returns JSON with configured interfaces from Reticulum config (includes disabled ones).
-// The returned pointer must be freed with runcore_free_string().
-char* runcore_configured_interfaces_json(runcore_handle_t handle);
+// Attachments are sent by placing files into the send folder.
 
-// Returns JSON with received LXMF delivery announces.
-// Response: {"announces":[...], "error":"..."}.
-// The returned pointer must be freed with runcore_free_string().
-char* runcore_announces_json(runcore_handle_t handle);
-
-// Returns JSON with best-effort contact info for `dest_hash_hex` (32 hex chars).
-// Response: {"display_name":"...", "avatar":{...}?, "error":"..."}.
-// The returned pointer must be freed with runcore_free_string().
-char* runcore_contact_info_json(runcore_handle_t handle, const char* dest_hash_hex, int32_t timeout_ms);
-
-// Returns JSON with best-effort contact avatar for `dest_hash_hex` (32 hex chars).
-// Request: known_avatar_hash_hex may be NULL/empty to always fetch.
-// Response: {"hash_hex":"..","png_base64":"..","unchanged":bool,"not_present":bool,"error":".."}.
-// The returned pointer must be freed with runcore_free_string().
-char* runcore_contact_avatar_json(runcore_handle_t handle, const char* dest_hash_hex, const char* known_avatar_hash_hex, int32_t timeout_ms);
-
-// Store an outgoing attachment payload on disk and return JSON with hash_hex.
-// Response: {"rc":0,"hash_hex":"..","mime":"..","name":"..","size":123,"updated":1700000000,"error":".."}.
-// The returned pointer must be freed with runcore_free_string().
-char* runcore_store_attachment_json(runcore_handle_t handle, const char* mime, const char* name, const unsigned char* data, int32_t data_len);
-
-// Fetch an attachment payload from a contact over Reticulum resource transfer.
-// Response: {"hash_hex":"..","path":"/abs/path","mime":"..","name":"..","size":123,"not_present":bool,"error":".."}.
-// The returned pointer must be freed with runcore_free_string().
-char* runcore_contact_attachment_json(runcore_handle_t handle, const char* dest_hash_hex, const char* attachment_hash_hex, int32_t timeout_ms);
+// Attachment fetch is handled by the Go core and stored on disk.
 
 
 // Enable/disable an interface by config section name (eg "Default Interface").

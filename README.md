@@ -7,7 +7,7 @@
 ### Go core
 
 - Reticulum+LXMF in a single process (no `rnsd`), `lxmd`-compatible config/storage layout.
-- Announces: `runcore_announce()` + receive announces (snapshot via `AnnouncesJSON()` / `runcore_announces_json()`).
+- Announces: sent automatically (periodic + change-driven) and received announces are persisted to `<configdir>/storage/announces.json`.
 - Profile: `display_name` + avatar (set/clear), serve avatar via `/avatar`, best-effort avatar fetch for a contact.
 - Messages: receive via inbound callback, send (opportunistic), outbound status updates via callback.
 - Interfaces: stats (`InterfaceStatsJSON`) + configured interfaces list + enable/disable interface by section name.
@@ -46,7 +46,7 @@ Print an example config and exit:
 go run ./cmd/runcore -exampleconfig
 ```
 
-By default, the Reticulum config is generated once into `<configdir>/rns/config` from an embedded template (after that you can edit it manually). To regenerate LXMF transient state (ratchets), use `-reset-lxmf`.
+By default, the Reticulum config is generated once into `<configdir>/rns/config` from an embedded template (after that you can edit it manually).
 
 ## Using as a library
 
@@ -82,6 +82,6 @@ Reticulum config:
 Reticulum in `go-reticulum` is a singleton, so to run two nodes you must run two separate processes with different `-config` directories:
 
 ```bash
-go run ./cmd/runcore -config .nodeA -reset-lxmf -v
-go run ./cmd/runcore -config .nodeB -reset-lxmf -v
+go run ./cmd/runcore -config .nodeA -v
+go run ./cmd/runcore -config .nodeB -v
 ```

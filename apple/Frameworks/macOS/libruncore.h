@@ -25,18 +25,10 @@ extern const char *_GoStringPtr(_GoString_ s);
 
 #include <stdint.h>
  #include <stdlib.h>
-typedef void (*runcore_inbound_cb)(void* user_data, const char* src_hash_hex, const char* msg_id_hex, const char* title, const char* content);
 typedef void (*runcore_log_cb)(void* user_data, int32_t level, const char* line);
-typedef void (*runcore_message_status_cb)(void* user_data, const char* dest_hash_hex, const char* msg_id_hex, int32_t state);
 
-static inline void runcore_inbound_cb_call(runcore_inbound_cb cb, void* user_data, const char* src, const char* msg_id, const char* title, const char* content) {
-  cb(user_data, src, msg_id, title, content);
-}
 static inline void runcore_log_cb_call(runcore_log_cb cb, void* user_data, int32_t level, const char* line) {
   cb(user_data, level, line);
-}
-static inline void runcore_message_status_cb_call(runcore_message_status_cb cb, void* user_data, const char* dest, const char* msg_id, int32_t state) {
-  cb(user_data, dest, msg_id, state);
 }
 
 #line 1 "cgo-generated-wrapper"
@@ -103,32 +95,15 @@ extern "C" {
 
 extern void runcore_free_string(char* p);
 extern char* runcore_default_lxmd_config(void);
-extern char* runcore_default_lxmd_config_for_name(char* displayName);
-extern char* runcore_default_rns_config(int32_t loglevel);
-extern uint64_t runcore_start(char* configDir, char* displayName, int32_t loglevel, int32_t resetLXMF);
+extern char* runcore_default_rns_config(void);
+extern uint64_t runcore_start(char* contactsDir, char* sendDir, char* messagesDir, int32_t loglevel);
 extern int32_t runcore_stop(uint64_t handle);
-extern void runcore_set_inbound_cb(uint64_t handle, runcore_inbound_cb cb, void* userData);
-extern void runcore_set_message_status_cb(uint64_t handle, runcore_message_status_cb cb, void* userData);
 extern void runcore_set_log_cb(runcore_log_cb cb, void* userData);
 extern void runcore_set_loglevel(int32_t level);
-extern char* runcore_destination_hash_hex(uint64_t handle);
-extern char* runcore_profile_name(uint64_t handle);
-extern int32_t runcore_send(uint64_t handle, char* destHashHex, char* title, char* content);
-extern char* runcore_send_result_json(uint64_t handle, char* destHashHex, char* title, char* content);
-extern int32_t runcore_announce(uint64_t handle);
-extern int32_t runcore_announce_with_reason(uint64_t handle, char* reason);
+extern char* runcore_config_dir(uint64_t handle);
 extern int32_t runcore_set_display_name(uint64_t handle, char* displayName);
 extern int32_t runcore_restart(uint64_t handle);
 extern char* runcore_interface_stats_json(uint64_t handle);
-extern char* runcore_configured_interfaces_json(uint64_t handle);
-extern char* runcore_announces_json(uint64_t handle);
-extern char* runcore_contact_info_json(uint64_t handle, char* destHashHex, int32_t timeoutMs);
-extern char* runcore_contact_avatar_json(uint64_t handle, char* destHashHex, char* knownAvatarHashHex, int32_t timeoutMs);
-extern char* runcore_store_attachment_json(uint64_t handle, char* mime, char* name, unsigned char* data, int32_t dataLen);
-extern char* runcore_contact_attachment_json(uint64_t handle, char* destHashHex, char* attachmentHashHex, int32_t timeoutMs);
-extern int32_t runcore_set_avatar_png(uint64_t handle, unsigned char* pngData, int32_t pngLen);
-extern int32_t runcore_set_avatar_image(uint64_t handle, char* mime, unsigned char* data, int32_t dataLen);
-extern int32_t runcore_clear_avatar(uint64_t handle);
 extern int32_t runcore_set_interface_enabled(uint64_t handle, char* name, int32_t enabled);
 
 #ifdef __cplusplus

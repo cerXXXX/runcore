@@ -196,7 +196,7 @@ func applyConfig() error {
 	return nil
 }
 
-func programSetup(configDir, rnsConfigDir string, forcePropagationNode bool, onInbound string, verbosity, quietness int, service bool, resetLXMF bool) {
+func programSetup(configDir, rnsConfigDir string, forcePropagationNode bool, onInbound string, verbosity, quietness int, service bool) {
 	if configDir == "" {
 		home, _ := os.UserHomeDir()
 		if home != "" {
@@ -252,12 +252,11 @@ func programSetup(configDir, rnsConfigDir string, forcePropagationNode bool, onI
 	}
 
 	opts := runcore.Options{
-		Dir:            configDir,
-		RNSConfigDir:   rnsConfigDir,
-		DisplayName:    activeConfig.DisplayName,
-		LogLevel:       level,
-		LogDest:        logDest,
-		ResetLXMFState: resetLXMF,
+		Dir:          configDir,
+		RNSConfigDir: rnsConfigDir,
+		DisplayName:  activeConfig.DisplayName,
+		LogLevel:     level,
+		LogDest:      logDest,
 	}
 	node, err = runcore.Start(opts)
 	if err != nil {
@@ -360,7 +359,6 @@ func main() {
 	propagationNode := flag.Bool("propagation-node", false, "run as an LXMF Propagation Node")
 	onInbound := flag.String("on-inbound", "", "command run when a message is received (arg: message file path)")
 	service := flag.Bool("service", false, "log to file (Reticulum logdest)")
-	resetLXMF := flag.Bool("reset-lxmf", false, "remove LXMF transient state under config dir before starting")
 	example := flag.Bool("exampleconfig", false, "print verbose configuration example and exit")
 	version := flag.Bool("version", false, "print version and exit")
 
@@ -382,5 +380,5 @@ func main() {
 	}
 
 	// If rnsconfig is empty, runcore.Start will use configDir/rns with an inline default.
-	programSetup(*configDir, *rnsConfigDir, *propagationNode, *onInbound, verboseCount, quietCount, *service, *resetLXMF)
+	programSetup(*configDir, *rnsConfigDir, *propagationNode, *onInbound, verboseCount, quietCount, *service)
 }
