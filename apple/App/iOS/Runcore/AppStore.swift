@@ -39,6 +39,7 @@ final class AppStore: ObservableObject {
     private let persistence = Persistence()
     private let engine = RuncoreEngine()
     private var pendingAnnounceTask: Task<Void, Never>?
+    private var contactStorage: ContactDiskStorage?
     private var statsPollTask: Task<Void, Never>?
     private var pendingRawLogLines: [String] = []
     private var rawLogFlushTask: Task<Void, Never>?
@@ -129,6 +130,10 @@ final class AppStore: ObservableObject {
             self.applyOutboundStatus(destHashHex: destHex, messageIDHex: messageIDHex, state: state)
         }
         engine.start()
+        if let storage = ContactDiskStorage(rootURL: engine.contactsDirectoryURL) {
+            contactStorage = storage
+            importContactsFromDisk()
+        }
         appendLog("engine started (iOS stub)")
         profileName = engine.displayName
         save()
@@ -919,16 +924,16 @@ final class AppStore: ObservableObject {
     }
 
     private func load() {
+        contacts = []
+        selectedContactID = nil
         do {
             let snapshot = try persistence.load()
-            contacts = snapshot.contacts
             messagesByContactID = snapshot.messagesByContactID
             logs = snapshot.logs ?? []
             profileName = snapshot.profileName ?? "Me"
             profileAvatarData = snapshot.profileAvatarData
             debugLoggingEnabled = snapshot.debugLoggingEnabled ?? false
             blockedDestinations = snapshot.blockedDestinations ?? []
-            selectedContactID = contacts.first?.id
         } catch {
             contacts = []
             messagesByContactID = [:]
@@ -951,6 +956,39 @@ final class AppStore: ObservableObject {
             blockedDestinations: blockedDestinations
         )
         try? persistence.save(snapshot)
+        persistContactsToDisk()
+    }
+
+    private func importContactsFromDisk() {
+        guard let storage = contactStorage else { return }
+        do {
+            let entries = try storage.loadEntries()
+            var newContacts: [Contact] = []
+            for entry in entries {
+                let normalizedEntry = normalizeDestinationHashHex(entry.destinationHashHex)
+                guard !normalizedEntry.isEmpty else { continue }
+                let contact = Contact(
+                    displayName: entry.name,
+                    destinationHashHex: normalizedEntry,
+                    avatarHashHex: entry.avatarData?.sha256LowerHex,
+                    avatarData: entry.avatarData
+                )
+                newContacts.append(contact)
+            }
+            contacts = newContacts
+            selectedContactID = contacts.first?.id
+        } catch {
+            appendLog("import contacts failed: \(error)")
+        }
+    }
+
+    private func persistContactsToDisk() {
+        guard let storage = contactStorage else { return }
+        do {
+            try storage.sync(contacts: contacts)
+        } catch {
+            appendLog("sync contacts failed: \(error)")
+        }
     }
 
     private func configPath() -> URL {
@@ -1195,6 +1233,202 @@ struct Snapshot: Codable {
     var blockedDestinations: [String]?
 }
 
+private struct DiskContactEntry {
+    let name: String
+    let destinationHashHex: String
+    let avatarData: Data?
+}
+
+private final class ContactDiskStorage {
+    private let rootURL: URL
+    private let fileManager: FileManager
+
+    init?(rootURL: URL?) {
+        guard let url = rootURL else { return nil }
+        self.rootURL = url
+        self.fileManager = FileManager.default
+    }
+
+    func loadEntries() throws -> [DiskContactEntry] {
+        let (destMap, _) = try scanDirectories()
+        return destMap.map { destination, url in
+            let avatar = try? loadAvatar(from: url)
+            return DiskContactEntry(name: url.lastPathComponent, destinationHashHex: destination, avatarData: avatar)
+        }
+    }
+
+    func sync(contacts: [Contact]) throws {
+        let (existingDestMap, directoryNames) = try scanDirectories()
+        var occupiedNames = directoryNames
+        var processedDestinations = Set<String>()
+        for contact in contacts {
+            guard let destination = normalizeDestinationHashHex(contact.destinationHashHex) else { continue }
+            processedDestinations.insert(destination)
+            let targetName = sanitizeContactFolderName(contact.resolvedDisplayName)
+            let avatarData = contact.resolvedAvatarData
+            let folderURL: URL
+            if let existingURL = existingDestMap[destination] {
+                folderURL = try renameIfNeeded(url: existingURL, desiredName: targetName, occupiedNames: &occupiedNames)
+            } else {
+                folderURL = try createDirectory(named: targetName, occupiedNames: &occupiedNames)
+            }
+            try writeLXMF(destination, to: folderURL)
+            if let avatarData {
+                try writeAvatar(avatarData, to: folderURL)
+            } else {
+                try removeAvatarFiles(at: folderURL)
+            }
+        }
+        try cleanup(excluding: processedDestinations)
+    }
+
+    private func scanDirectories() throws -> (destinations: [String: URL], names: Set<String>) {
+        let contents = try fileManager.contentsOfDirectory(at: rootURL, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
+        var destMap: [String: URL] = [:]
+        var names: Set<String> = []
+        for url in contents {
+            var isDir: ObjCBool = false
+            guard fileManager.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue else { continue }
+            names.insert(url.lastPathComponent)
+            if let destination = readLXMFDestination(from: url) {
+                destMap[destination] = url
+            }
+        }
+        return (destMap, names)
+    }
+
+    private func createDirectory(named baseName: String, occupiedNames: inout Set<String>) throws -> URL {
+        var candidateName = baseName
+        if candidateName.isEmpty {
+            candidateName = "Contact"
+        }
+        var candidate = rootURL.appendingPathComponent(candidateName)
+        var counter = 2
+        while occupiedNames.contains(candidate.lastPathComponent) || fileManager.fileExists(atPath: candidate.path) {
+            candidate = rootURL.appendingPathComponent("\(baseName)-\(counter)")
+            counter += 1
+        }
+        try fileManager.createDirectory(at: candidate, withIntermediateDirectories: true)
+        occupiedNames.insert(candidate.lastPathComponent)
+        return candidate
+    }
+
+    private func renameIfNeeded(url: URL, desiredName: String, occupiedNames: inout Set<String>) throws -> URL {
+        let currentName = url.lastPathComponent
+        occupiedNames.remove(currentName)
+        let targetName = desiredName.isEmpty ? currentName : desiredName
+        if currentName == targetName {
+            occupiedNames.insert(currentName)
+            return url
+        }
+        var candidate = rootURL.appendingPathComponent(targetName)
+        var counter = 2
+        while occupiedNames.contains(candidate.lastPathComponent) || (fileManager.fileExists(atPath: candidate.path) && candidate.path != url.path) {
+            candidate = rootURL.appendingPathComponent("\(targetName)-\(counter)")
+            counter += 1
+        }
+        try fileManager.moveItem(at: url, to: candidate)
+        occupiedNames.insert(candidate.lastPathComponent)
+        return candidate
+    }
+
+    private func cleanup(excluding destinations: Set<String>) throws {
+        let (destMap, _) = try scanDirectories()
+        for (destination, url) in destMap where !destinations.contains(destination) {
+            try fileManager.removeItem(at: url)
+        }
+    }
+
+    private func writeLXMF(_ destination: String, to dir: URL) throws {
+        guard let data = destination.data(using: .utf8) else {
+            throw NSError(domain: "ContactDiskStorage", code: 1, userInfo: [NSLocalizedDescriptionKey: "failed to encode destination"])
+        }
+        let target = dir.appendingPathComponent("lxmf")
+        try data.write(to: target, options: [.atomic])
+    }
+
+    private func writeAvatar(_ data: Data, to dir: URL) throws {
+        let ext = avatarExtension(for: data)
+        let target = dir.appendingPathComponent("avatar\(ext)")
+        try data.write(to: target, options: [.atomic])
+        try removeAvatarFiles(at: dir, excluding: target)
+    }
+
+    private func removeAvatarFiles(at dir: URL) throws {
+        try removeAvatarFiles(at: dir, excluding: nil)
+    }
+
+    private func removeAvatarFiles(at dir: URL, excluding kept: URL?) throws {
+        for entry in avatarCandidates(in: dir) {
+            if let kept, entry.path == kept.path {
+                continue
+            }
+            if fileManager.fileExists(atPath: entry.path) {
+                try fileManager.removeItem(at: entry)
+            }
+        }
+    }
+
+    private func loadAvatar(from dir: URL) throws -> Data? {
+        for candidate in avatarCandidates(in: dir) {
+            if fileManager.fileExists(atPath: candidate.path) {
+                return try Data(contentsOf: candidate)
+            }
+        }
+        return nil
+    }
+
+    private func avatarCandidates(in dir: URL) -> [URL] {
+        return [
+            dir.appendingPathComponent("avatar.png"),
+            dir.appendingPathComponent("avatar.jpg"),
+            dir.appendingPathComponent("avatar.jpeg"),
+            dir.appendingPathComponent("avatar.heic"),
+            dir.appendingPathComponent("avatar.bin")
+        ]
+    }
+
+    private func avatarExtension(for data: Data) -> String {
+        if data.starts(with: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) {
+            return ".png"
+        }
+        if data.starts(with: [0xff, 0xd8, 0xff]) {
+            return ".jpg"
+        }
+        if data.count >= 12, let header = String(data: data[4..<8], encoding: .ascii), header == "ftyp" {
+            return ".heic"
+        }
+        return ".bin"
+    }
+
+    private func normalizeDestinationHashHex(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func readLXMFDestination(from dir: URL) -> String? {
+        let target = dir.appendingPathComponent("lxmf")
+        guard let data = try? Data(contentsOf: target) else { return nil }
+        let trimmed = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return trimmed?.isEmpty == false ? trimmed : nil
+    }
+
+    private func sanitizeContactFolderName(_ name: String) -> String {
+        var result = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if result.isEmpty {
+            return "Unknown"
+        }
+        let separators = CharacterSet(charactersIn: "/\\:")
+        result = result.components(separatedBy: separators).joined(separator: "_")
+        result = result.replacingOccurrences(of: "\u{0000}", with: "_")
+        result = result.trimmingCharacters(in: .whitespacesAndNewlines)
+        if result.count > 80 {
+            result = String(result.prefix(80))
+        }
+        return result.isEmpty ? "Unknown" : result
+    }
+}
+
 private struct Persistence {
     private let fileURL: URL = {
         let fm = FileManager.default
@@ -1212,5 +1446,14 @@ private struct Persistence {
     func save(_ snapshot: Snapshot) throws {
         let data = try JSONEncoder().encode(snapshot)
         try data.write(to: fileURL, options: [.atomic])
+    }
+}
+
+private extension Data {
+    var sha256LowerHex: String {
+        let digest = SHA256.hash(data: self)
+        return digest.reduce(into: "") { partial, byte in
+            partial += String(format: "%02x", byte)
+        }
     }
 }
