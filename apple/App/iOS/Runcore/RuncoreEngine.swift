@@ -11,9 +11,15 @@ final class RuncoreEngine {
     var displayName: String = "Me"
     var logLevel: Int32 = 3
     private(set) var contactsDirPath: String?
+    private(set) var lxmfDirPath: String?
 
     var contactsDirectoryURL: URL? {
         guard let path = contactsDirPath else { return nil }
+        return URL(fileURLWithPath: path)
+    }
+
+    var lxmfDirectoryURL: URL? {
+        guard let path = lxmfDirPath else { return nil }
         return URL(fileURLWithPath: path)
     }
 
@@ -130,6 +136,7 @@ final class RuncoreEngine {
         try? fm.createDirectory(atPath: lxmfDir, withIntermediateDirectories: true)
         try? fm.createDirectory(atPath: sendDir, withIntermediateDirectories: true)
         contactsDirPath = contactsDir
+        lxmfDirPath = lxmfDir
 
         // Tell Go where to keep configs/state (system folder) without changing the FFI signature.
         let cfg = systemConfigDir()

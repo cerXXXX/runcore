@@ -7,6 +7,8 @@ import (
 	"strings"
 )
 
+const meLXMFFileName = "lxmf"
+
 const meTagXattr = "user.runcore.me"
 
 func (n *Node) ensureMeContactDir(desiredName string) (string, string, error) {
@@ -121,4 +123,25 @@ func sanitizeContactFolderName(name string) string {
 		return name[:80]
 	}
 	return name
+}
+
+func (n *Node) ensureMeLXMFFile() error {
+	if n == nil {
+		return errors.New("node not started")
+	}
+	dir, err := n.findMeContactDir()
+	if err != nil || dir == "" {
+		return err
+	}
+	target := filepath.Join(dir, meLXMFFileName)
+	if _, err := os.Stat(target); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	hash := strings.TrimSpace(n.DestinationHashHex())
+	if hash == "" {
+		return errors.New("missing destination hash")
+	}
+	return os.WriteFile(target, []byte(hash), 0o644)
 }

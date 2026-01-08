@@ -206,6 +206,9 @@ func Start(opts Options) (*Node, error) {
 	} else if strings.TrimSpace(n.displayName) == "" {
 		n.displayName = "Me"
 	}
+	if err := n.ensureMeLXMFFile(); err != nil {
+		rns.Logf(rns.LOG_WARNING, "ensure me lxmf file: %v", err)
+	}
 
 	n.sendDir = strings.TrimSpace(n.opts.SendDir)
 

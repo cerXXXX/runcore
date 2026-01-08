@@ -113,7 +113,7 @@ func runcore_start(contactsDir *C.char, lxmfDir *C.char, sendDir *C.char, displa
 	checkDirReadableWritable(send)
 
 	n, err := runcore.Start(runcore.Options{
-		Dir:            "",
+		Dir:            dir,
 		ContactsDir:    contacts,
 		SendDir:        send,
 		DisplayName:    name,

@@ -36,7 +36,6 @@ final class AppStore: ObservableObject {
     @Published var inboundPromptAvatarHashHex: String?
     @Published var inboundPromptIsLoadingAvatar: Bool = false
 
-    private let persistence = Persistence()
     private let engine = RuncoreEngine()
     private var pendingAnnounceTask: Task<Void, Never>?
     private var contactStorage: ContactDiskStorage?
@@ -79,7 +78,7 @@ final class AppStore: ObservableObject {
         }
         engine.onInbound = { [weak self] srcHex, messageIDHex, title, content in
             guard let self else { return }
-            let src = self.normalizeDestinationHashHex(srcHex)
+            let src = normalizeDestinationHashHex(srcHex)
             let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
             self.appendLog("inbound src=\(src) title=\(trimmedTitle)")
 
@@ -134,6 +133,7 @@ final class AppStore: ObservableObject {
             contactStorage = storage
             importContactsFromDisk()
         }
+        loadMessagesFromLXMF()
         appendLog("engine started (iOS stub)")
         profileName = engine.displayName
         save()
@@ -198,12 +198,17 @@ final class AppStore: ObservableObject {
             return
         }
 
-        let outPath = self.outboundAttachmentPath(hashHex: hash)
-        do {
-            try FileManager.default.createDirectory(at: URL(fileURLWithPath: outPath).deletingLastPathComponent(), withIntermediateDirectories: true)
-            try data.write(to: URL(fileURLWithPath: outPath), options: [.atomic])
-        } catch {
-            appendLog("attachment save failed: \(error)")
+        let originalName = stored.name ?? suggestedName ?? hash
+        let pendingURL = pendingAttachmentURL(for: contact, baseName: originalName)
+        if let pendingURL {
+            do {
+                try FileManager.default.createDirectory(at: pendingURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try data.write(to: pendingURL, options: [.atomic])
+            } catch {
+                appendLog("attachment save failed: \(error)")
+            }
+        } else {
+            appendLog("attachment save failed: pending path unavailable")
         }
 
         let messageText = caption
@@ -215,7 +220,7 @@ final class AppStore: ObservableObject {
                 mime: stored.mime,
                 name: stored.name ?? suggestedName,
                 size: stored.size,
-                localPath: outPath
+                localPath: pendingURL?.path
             ),
             title: "img",
             outboundStatus: .pending
@@ -281,17 +286,6 @@ final class AppStore: ObservableObject {
         }
         guard let hash, !hash.isEmpty else { return nil }
         return AttachmentParsed(hashHex: hash, mime: mime, name: name, size: size, caption: caption)
-    }
-
-    private func outboundAttachmentPath(hashHex: String) -> String {
-        let hash = hashHex.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let fm = FileManager.default
-        let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let base = appSupport.appendingPathComponent("Runcore", isDirectory: true)
-        return base.appendingPathComponent("attachments", isDirectory: true)
-            .appendingPathComponent("out", isDirectory: true)
-            .appendingPathComponent("\(hash).bin")
-            .path
     }
 
     private func fetchAttachment(remoteHashHex: String, contactID: UUID, localMessageID: UUID, attachmentHashHex: String) {
@@ -926,37 +920,17 @@ final class AppStore: ObservableObject {
     private func load() {
         contacts = []
         selectedContactID = nil
-        do {
-            let snapshot = try persistence.load()
-            messagesByContactID = snapshot.messagesByContactID
-            logs = snapshot.logs ?? []
-            profileName = snapshot.profileName ?? "Me"
-            profileAvatarData = snapshot.profileAvatarData
-            debugLoggingEnabled = snapshot.debugLoggingEnabled ?? false
-            blockedDestinations = snapshot.blockedDestinations ?? []
-        } catch {
-            contacts = []
-            messagesByContactID = [:]
-            logs = []
-            profileName = "Me"
-            profileAvatarData = nil
-            debugLoggingEnabled = false
-            blockedDestinations = []
-        }
+        messagesByContactID = [:]
+        logs = []
+        profileName = "Me"
+        profileAvatarData = nil
+        debugLoggingEnabled = false
+        blockedDestinations = []
     }
 
     private func save() {
-        let snapshot = Snapshot(
-            contacts: contacts,
-            messagesByContactID: messagesByContactID,
-            logs: logs,
-            profileName: profileName,
-            profileAvatarData: profileAvatarData,
-            debugLoggingEnabled: debugLoggingEnabled,
-            blockedDestinations: blockedDestinations
-        )
-        try? persistence.save(snapshot)
         persistContactsToDisk()
+        persistMessagesToLXMF()
     }
 
     private func importContactsFromDisk() {
@@ -991,6 +965,226 @@ final class AppStore: ObservableObject {
         }
     }
 
+    private func loadMessagesFromLXMF() {
+        guard let base = engine.lxmfDirectoryURL else { return }
+        let fm = FileManager.default
+        guard let folders = try? fm.contentsOfDirectory(at: base, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { return }
+        for folder in folders where folder.hasDirectoryPath {
+            let dest = folder.lastPathComponent
+            guard let contact = contacts.first(where: { normalizeDestinationHashHex($0.destinationHashHex) == dest }) else {
+                continue
+            }
+            let messages = loadMessages(from: folder)
+            if !messages.isEmpty {
+                messagesByContactID[contact.id] = messages
+            }
+        }
+    }
+
+    private func persistMessagesToLXMF() {
+        guard let base = engine.lxmfDirectoryURL else { return }
+        for contact in contacts {
+            let dest = normalizeDestinationHashHex(contact.destinationHashHex)
+            guard !dest.isEmpty else { continue }
+            let folder = base.appendingPathComponent(dest, isDirectory: true)
+            do {
+                try rewriteMessages(for: contact, at: folder)
+            } catch {
+                appendLog("persist messages failed for \(contact.destinationHashHex): \(error)")
+            }
+        }
+    }
+
+    private func rewriteMessages(for contact: Contact, at folder: URL) throws {
+        let fm = FileManager.default
+        let messages = messagesByContactID[contact.id] ?? []
+        if messages.isEmpty {
+            try? fm.removeItem(at: folder)
+            return
+        }
+        let parent = folder.deletingLastPathComponent()
+        try fm.createDirectory(at: parent, withIntermediateDirectories: true)
+        let temp = parent.appendingPathComponent("\(folder.lastPathComponent).tmp", isDirectory: true)
+        try? fm.removeItem(at: temp)
+        try fm.createDirectory(at: temp, withIntermediateDirectories: true)
+        var rewritten: [ChatMessage] = []
+        let encoder = JSONEncoder()
+        for message in messages {
+            let (updated, meta) = try write(message: message, to: temp)
+            rewritten.append(updated)
+            let metaURL = temp.appendingPathComponent(meta.fileName + ".meta")
+            let data = try encoder.encode(meta)
+            try data.write(to: metaURL, options: .atomic)
+        }
+        try? fm.removeItem(at: folder)
+        try fm.moveItem(at: temp, to: folder)
+        messagesByContactID[contact.id] = rewritten
+    }
+
+    private func write(message: ChatMessage, to folder: URL) throws -> (ChatMessage, MessageFileMetadata) {
+        var updated = message
+        let timestamp = message.timestamp
+        let timestampString = timestampLabel(for: timestamp)
+        if let attachment = message.attachment {
+            let baseName = attachment.name?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let fallback = attachment.hashHex ?? "attachment"
+            let safeName = sanitizeFileName(baseName?.isEmpty == false ? baseName! : fallback)
+            let fileName = "\(timestampString) \(safeName)"
+            let data = try readAttachmentData(from: attachment)
+            let fileURL = folder.appendingPathComponent(fileName)
+            try data.write(to: fileURL, options: .atomic)
+            let originalPath = attachment.localPath
+            updated.attachment?.localPath = fileURL.path
+            if let path = originalPath, isPendingAttachmentPath(path) {
+                try? FileManager.default.removeItem(atPath: path)
+            }
+            let meta = MessageFileMetadata(
+                uuid: message.id,
+                direction: message.direction,
+                title: message.title,
+                messageIDHex: message.lxmfMessageIDHex,
+                fileName: fileName,
+                timestamp: timestamp.timeIntervalSince1970,
+                isAttachment: true,
+                attachmentName: attachment.name,
+                attachmentHashHex: attachment.hashHex,
+                mime: attachment.mime
+            )
+            return (updated, meta)
+        } else {
+            let fileName = "\(timestampString).txt"
+            let data = message.text.data(using: .utf8) ?? Data()
+            let fileURL = folder.appendingPathComponent(fileName)
+            try data.write(to: fileURL, options: .atomic)
+            updated.attachment?.localPath = nil
+            let meta = MessageFileMetadata(
+                uuid: message.id,
+                direction: message.direction,
+                title: message.title,
+                messageIDHex: message.lxmfMessageIDHex,
+                fileName: fileName,
+                timestamp: timestamp.timeIntervalSince1970,
+                isAttachment: false,
+                attachmentName: nil,
+                attachmentHashHex: nil,
+                mime: nil
+            )
+            return (updated, meta)
+        }
+    }
+
+    private var pendingAttachmentsRoot: URL? {
+        guard let base = engine.lxmfDirectoryURL else { return nil }
+        return base.appendingPathComponent(".pending", isDirectory: true)
+    }
+
+    private func pendingAttachmentURL(for contact: Contact, baseName: String) -> URL? {
+        guard let root = pendingAttachmentsRoot else { return nil }
+        let identifier = normalizeDestinationHashHex(contact.destinationHashHex) ?? contact.destinationHashHex
+        let contactFolder = root.appendingPathComponent(identifier, isDirectory: true)
+        try? FileManager.default.createDirectory(at: contactFolder, withIntermediateDirectories: true)
+        let fileName = "\(UUID().uuidString)-\(sanitizeFileName(baseName))"
+        return contactFolder.appendingPathComponent(fileName)
+    }
+
+    private var pendingAttachmentsRootPath: String? {
+        pendingAttachmentsRoot?.path
+    }
+
+    private func isPendingAttachmentPath(_ path: String) -> Bool {
+        guard let root = pendingAttachmentsRootPath else { return false }
+        return path.hasPrefix(root)
+    }
+
+    private func loadMessages(from folder: URL) -> [ChatMessage] {
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else {
+            return []
+        }
+        let decoder = JSONDecoder()
+        var metas: [MessageFileMetadata] = []
+        for entry in entries where entry.pathExtension == "meta" {
+            if let data = try? Data(contentsOf: entry),
+               let meta = try? decoder.decode(MessageFileMetadata.self, from: data) {
+                metas.append(meta)
+            }
+        }
+        metas.sort(by: { $0.timestamp < $1.timestamp })
+        var result: [ChatMessage] = []
+        for meta in metas {
+            let timestamp = Date(timeIntervalSince1970: meta.timestamp)
+            var textContent = ""
+            if !meta.isAttachment {
+                let textFile = folder.appendingPathComponent(meta.fileName)
+                textContent = (try? String(contentsOf: textFile, encoding: .utf8)) ?? ""
+            }
+            var attachment: MessageAttachment?
+            if meta.isAttachment {
+                let attachmentFile = folder.appendingPathComponent(meta.fileName)
+                let size = (try? fm.attributesOfItem(atPath: attachmentFile.path)[.size] as? Int) ?? nil
+                attachment = MessageAttachment(
+                    hashHex: meta.attachmentHashHex ?? "",
+                    mime: meta.mime,
+                    name: meta.attachmentName,
+                    size: size,
+                    localPath: attachmentFile.path
+                )
+            }
+            let chat = ChatMessage(
+                id: meta.uuid,
+                timestamp: timestamp,
+                direction: meta.direction,
+                text: textContent,
+                attachment: attachment,
+                title: meta.title,
+                lxmfMessageIDHex: meta.messageIDHex
+            )
+            result.append(chat)
+        }
+        return result
+    }
+
+    private func readAttachmentData(from attachment: MessageAttachment) throws -> Data {
+        if let path = attachment.localPath, FileManager.default.fileExists(atPath: path) {
+            return try Data(contentsOf: URL(fileURLWithPath: path))
+        }
+        return Data()
+    }
+
+    private func timestampLabel(for date: Date) -> String {
+        Self.messageTimestampFormatter.string(from: date)
+    }
+
+    private func sanitizeFileName(_ name: String) -> String {
+        var cleaned = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let invalid = CharacterSet(charactersIn: "/\\?%*|\"<>")
+        cleaned = cleaned.components(separatedBy: invalid).joined(separator: "_")
+        if cleaned.isEmpty {
+            cleaned = "attachment"
+        }
+        return cleaned
+    }
+
+    private struct MessageFileMetadata: Codable {
+        let uuid: UUID
+        let direction: MessageDirection
+        let title: String
+        let messageIDHex: String?
+        let fileName: String
+        let timestamp: TimeInterval
+        let isAttachment: Bool
+        let attachmentName: String?
+        let attachmentHashHex: String?
+        let mime: String?
+    }
+
+    private static let messageTimestampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HH'\u{A789}'mm"
+        return formatter
+    }()
+
     private func configPath() -> URL {
         let fm = FileManager.default
         let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -1008,10 +1202,6 @@ final class AppStore: ObservableObject {
     private func loadTextFile(at url: URL) -> String? {
         guard let data = try? Data(contentsOf: url) else { return nil }
         return String(data: data, encoding: .utf8)
-    }
-
-    private func normalizeDestinationHashHex(_ s: String) -> String {
-        s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     func displayNameForDestinationHashHex(_ destHashHex: String) -> String {
@@ -1223,16 +1413,6 @@ extension InterfaceStatsSnapshot {
     }
 }
 
-struct Snapshot: Codable {
-    var contacts: [Contact]
-    var messagesByContactID: [UUID: [ChatMessage]]
-    var logs: [String]?
-    var profileName: String?
-    var profileAvatarData: Data?
-    var debugLoggingEnabled: Bool?
-    var blockedDestinations: [String]?
-}
-
 private struct DiskContactEntry {
     let name: String
     let destinationHashHex: String
@@ -1262,7 +1442,8 @@ private final class ContactDiskStorage {
         var occupiedNames = directoryNames
         var processedDestinations = Set<String>()
         for contact in contacts {
-            guard let destination = normalizeDestinationHashHex(contact.destinationHashHex) else { continue }
+            let destination = normalizeDestinationHashHex(contact.destinationHashHex)
+            guard !destination.isEmpty else { continue }
             processedDestinations.insert(destination)
             let targetName = sanitizeContactFolderName(contact.resolvedDisplayName)
             let avatarData = contact.resolvedAvatarData
@@ -1401,11 +1582,6 @@ private final class ContactDiskStorage {
         return ".bin"
     }
 
-    private func normalizeDestinationHashHex(_ value: String) -> String? {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return trimmed.isEmpty ? nil : trimmed
-    }
-
     private func readLXMFDestination(from dir: URL) -> String? {
         let target = dir.appendingPathComponent("lxmf")
         guard let data = try? Data(contentsOf: target) else { return nil }
@@ -1429,26 +1605,6 @@ private final class ContactDiskStorage {
     }
 }
 
-private struct Persistence {
-    private let fileURL: URL = {
-        let fm = FileManager.default
-        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first!
-        let dir = docs.appendingPathComponent("Runcore", isDirectory: true)
-        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("state.json")
-    }()
-
-    func load() throws -> Snapshot {
-        let data = try Data(contentsOf: fileURL)
-        return try JSONDecoder().decode(Snapshot.self, from: data)
-    }
-
-    func save(_ snapshot: Snapshot) throws {
-        let data = try JSONEncoder().encode(snapshot)
-        try data.write(to: fileURL, options: [.atomic])
-    }
-}
-
 private extension Data {
     var sha256LowerHex: String {
         let digest = SHA256.hash(data: self)
@@ -1456,4 +1612,8 @@ private extension Data {
             partial += String(format: "%02x", byte)
         }
     }
+}
+
+fileprivate func normalizeDestinationHashHex(_ value: String) -> String {
+    value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 }
