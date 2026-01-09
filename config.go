@@ -15,6 +15,7 @@ type LXMDDiskLayout struct {
 	ConfigDir     string
 	ConfigPath    string
 	IdentityPath  string
+	InterfacesDir string
 	StorageDir    string
 	MessagesDir   string
 	RNSConfigDir  string
@@ -26,6 +27,7 @@ func ResolveLayout(configDir string) LXMDDiskLayout {
 		ConfigDir:     configDir,
 		ConfigPath:    filepath.Join(configDir, "config"),
 		IdentityPath:  filepath.Join(configDir, "identity"),
+		InterfacesDir: filepath.Join(configDir, "interfaces"),
 		StorageDir:    filepath.Join(configDir, "storage"),
 		MessagesDir:   filepath.Join(configDir, "storage", "messages"),
 		RNSConfigDir:  filepath.Join(configDir, "rns"),

@@ -15,6 +15,12 @@ import (
 )
 
 const sendLastAttemptXattr = "user.runcore.send_last_attempt"
+const sendStateXattr = "user.runcore.send_state"
+const sendStatePending = "pending"
+const sendErrorsDirName = ".errors"
+const sendServiceXattr = "service"
+const sendServiceLXMF = "lxmf"
+const sendFromXattr = "from"
 
 func (n *Node) startSendWatchdog() {
 	if n == nil {
@@ -104,61 +110,170 @@ func (n *Node) scanSendDirOnce() {
 		return
 	}
 
-	processRoot := func(root string) {
-		entries, err := os.ReadDir(root)
-		if err != nil {
-			return
-		}
-		for _, e := range entries {
-			if !e.IsDir() {
-				continue
-			}
-			name := e.Name()
-			if strings.HasPrefix(name, ".") {
-				continue
-			}
-			dest := strings.ToLower(strings.TrimSpace(name))
-			if dest == "" {
-				continue
-			}
-			if len(dest) != 32 { // destination hash hex
-				continue
-			}
-			n.processSendFolder(dest, filepath.Join(root, name))
-		}
-	}
-
-	// Scan both the main send dir and the .pending dir (for retries).
-	processRoot(sendDir)
-	processRoot(filepath.Join(sendDir, ".pending"))
-}
-
-func (n *Node) processSendFolder(destHashHex, dir string) {
-	// Move into send/.pending/<destHashHex> before processing to avoid duplicates.
-	if p := n.ensurePendingSendFolder(destHashHex, dir); p != "" {
-		dir = p
-	}
-
-	n.normalizeSendFilenames(dir)
-
-	files, err := os.ReadDir(dir)
+	entries, err := os.ReadDir(sendDir)
 	if err != nil {
 		return
 	}
-	paths := make([]string, 0, len(files))
-	for _, f := range files {
-		if f.IsDir() {
-			continue
-		}
-		name := f.Name()
+	for _, e := range entries {
+		name := e.Name()
 		if strings.HasPrefix(name, ".") {
 			continue
 		}
-		paths = append(paths, filepath.Join(dir, name))
+		p := filepath.Join(sendDir, name)
+		if e.IsDir() {
+			n.processSendContainer(p)
+			continue
+		}
+		n.processSendFile(p)
 	}
+}
+
+func (n *Node) processSendContainer(dir string) {
+	service := n.readSendService(dir)
+	if service == "" {
+		if !n.inferLegacySendContainer(dir) {
+			n.moveSendToErrors(dir)
+			return
+		}
+		service = sendServiceLXMF
+	}
+	if service != sendServiceLXMF {
+		// Unknown service - ignore for now (future: other services).
+		return
+	}
+	dest := n.readSendToValidated(dir)
+	if dest == "" {
+		n.moveSendToErrors(dir)
+		return
+	}
+	n.ensureSendFrom(dir)
+
+	n.processSendFolderByDest(dir, dest)
+}
+
+func (n *Node) processSendFile(path string) {
+	service := n.readSendService(path)
+	if service == "" {
+		n.moveSendToErrors(path)
+		return
+	}
+	if service != sendServiceLXMF {
+		return
+	}
+	dest := n.readSendToValidated(path)
+	if dest == "" {
+		n.moveSendToErrors(path)
+		return
+	}
+	n.ensureSendFrom(path)
+	n.processSendPaths(dest, []string{path})
+}
+
+func (n *Node) inferLegacySendContainer(dir string) bool {
+	// Backwards-compat: older UI wrote send/<destHashHex>/... without xattrs.
+	// If the folder name looks like a destination hash, treat it as LXMF to=<dest>.
+	if n == nil {
+		return false
+	}
+	base := strings.ToLower(strings.TrimSpace(filepath.Base(dir)))
+	if len(base) != 32 {
+		return false
+	}
+	// Validate hex (32 chars). We do manual rune checks to avoid partial-parse pitfalls.
+	for _, r := range base {
+		if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') {
+			continue
+		}
+		return false
+	}
+
+	// Mark the container itself (folder-level send workflow).
+	_ = setXattrTag(dir, sendServiceXattr, []byte(sendServiceLXMF))
+	_ = setXattrTag(dir, messageToXattr, []byte(base))
+	n.ensureSendFrom(dir)
+	return true
+}
+
+func (n *Node) readSendService(path string) string {
+	raw, ok := getXattrTagString(path, sendServiceXattr)
+	if !ok {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(raw))
+}
+
+func (n *Node) readSendToValidated(path string) string {
+	raw, ok := getXattrTagString(path, messageToXattr)
+	if !ok {
+		return ""
+	}
+	dest := strings.ToLower(strings.TrimSpace(raw))
+	if len(dest) != 32 {
+		return ""
+	}
+	return dest
+}
+
+func (n *Node) ensureSendFrom(path string) {
+	if n == nil {
+		return
+	}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return
+	}
+	if hasXattrTag(path, sendFromXattr) {
+		return
+	}
+	me := strings.ToLower(strings.TrimSpace(n.DestinationHashHex()))
+	if me == "" {
+		return
+	}
+	_ = setXattrTag(path, sendFromXattr, []byte(me))
+}
+
+func (n *Node) processSendFolderByDest(dir string, destHashHex string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	paths := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
+		p := filepath.Join(dir, name)
+		paths = append(paths, p)
+	}
+	n.processSendPaths(destHashHex, paths)
+}
+
+func (n *Node) processSendPaths(destHashHex string, paths []string) {
+	destHashHex = strings.ToLower(strings.TrimSpace(destHashHex))
+	if destHashHex == "" || len(destHashHex) != 32 {
+		return
+	}
+	if len(paths) == 0 {
+		return
+	}
+
+	// Normalize file names in-place (timestamp prefix) per parent folder.
+	for _, p := range paths {
+		n.normalizeSendFilename(p)
+	}
+
 	sort.Strings(paths)
 	if len(paths) == 0 {
 		return
+	}
+
+	// Mark all current files as pending; we keep them in send/<dest> and rely on xattr for status.
+	for _, p := range paths {
+		n.markSendPending(p)
 	}
 
 	// Prefer sending binary files as attachments; use optional caption.txt as caption if present.
@@ -209,7 +324,7 @@ func (n *Node) processSendFolder(destHashHex, dir string) {
 				rns.Logf(rns.LOG_NOTICE, "send folder: failed dest=%s err=%v", destHashHex, err)
 				return
 			}
-			n.moveSentFileToMessages(destHashHex, p, msg, lxmf.MessageOutbound)
+			n.moveSentFileToMessages(destHashHex, p, msg, lxmf.MessageSent)
 		}
 		return
 	}
@@ -240,7 +355,7 @@ func (n *Node) processSendFolder(destHashHex, dir string) {
 			rns.Logf(rns.LOG_NOTICE, "send folder: send attachment failed dest=%s err=%v", destHashHex, err)
 			return
 		}
-		n.moveSentFileToMessages(destHashHex, attachPath, msg, lxmf.MessageOutbound)
+		n.moveSentFileToMessages(destHashHex, attachPath, msg, lxmf.MessageSent)
 	}
 	if captionPath != "" {
 		// Also move caption into messages as a normal text message file.
@@ -264,32 +379,16 @@ func formatAttachmentMessage(hashHex, mime, name string, size int, caption strin
 	return strings.Join(lines, "\n")
 }
 
-func (n *Node) ensurePendingSendFolder(destHashHex, currentDir string) string {
-	sendDir := strings.TrimSpace(n.sendDir)
-	if sendDir == "" {
-		return ""
+func (n *Node) markSendPending(path string) {
+	if n == nil {
+		return
 	}
-	pendingRoot := filepath.Join(sendDir, ".pending")
-	_ = os.MkdirAll(pendingRoot, 0o755)
-	pendingDir := filepath.Join(pendingRoot, destHashHex)
-
-	// If we're already in pending/<dest>, keep it.
-	if filepath.Clean(currentDir) == filepath.Clean(pendingDir) {
-		_ = setXattrTag(pendingDir, sendLastAttemptXattr, []byte(strconv.FormatInt(time.Now().Unix(), 10)))
-		return pendingDir
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return
 	}
-
-	// If pending already exists, do not rename over it; just process currentDir as-is.
-	if st, err := os.Stat(pendingDir); err == nil && st.IsDir() {
-		return currentDir
-	}
-
-	// Best-effort move into pending to avoid re-processing on watcher ticks.
-	if err := os.Rename(currentDir, pendingDir); err != nil {
-		return currentDir
-	}
-	_ = setXattrTag(pendingDir, sendLastAttemptXattr, []byte(strconv.FormatInt(time.Now().Unix(), 10)))
-	return pendingDir
+	_ = setXattrTag(path, sendStateXattr, []byte(sendStatePending))
+	_ = setXattrTag(path, sendLastAttemptXattr, []byte(strconv.FormatInt(time.Now().Unix(), 10)))
 }
 
 func hasMessageTimestampPrefix(name string) bool {
@@ -324,6 +423,45 @@ func (n *Node) normalizeSendFilenames(dir string) {
 	}
 }
 
+func (n *Node) normalizeSendFilename(path string) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return
+	}
+	base := filepath.Base(path)
+	if strings.HasPrefix(base, ".") {
+		return
+	}
+	if hasMessageTimestampPrefix(base) {
+		return
+	}
+	prefix := formatMessageMinute(time.Now())
+	newName := prefix + " " + base
+	_ = os.Rename(path, filepath.Join(filepath.Dir(path), newName))
+}
+
+func (n *Node) moveSendToErrors(path string) {
+	sendDir := strings.TrimSpace(n.sendDir)
+	path = strings.TrimSpace(path)
+	if sendDir == "" || path == "" {
+		return
+	}
+	errorsDir := filepath.Join(sendDir, sendErrorsDirName)
+	_ = os.MkdirAll(errorsDir, 0o755)
+	dst := filepath.Join(errorsDir, filepath.Base(path))
+	dst = uniquePath(dst)
+	if err := os.Rename(path, dst); err != nil {
+		// Fallback to copy+remove if rename fails.
+		if st, stErr := os.Stat(path); stErr == nil && st.IsDir() {
+			// Directory fallback: best-effort leave it in place if rename fails.
+			return
+		}
+		if err2 := copyFile(path, dst); err2 == nil {
+			_ = os.Remove(path)
+		}
+	}
+}
+
 func (n *Node) moveSentFileToMessages(destHashHex, srcPath string, msg *lxmf.LXMessage, initialState byte) {
 	destHashHex = strings.ToLower(strings.TrimSpace(destHashHex))
 	srcPath = strings.TrimSpace(srcPath)
@@ -335,6 +473,7 @@ func (n *Node) moveSentFileToMessages(destHashHex, srcPath string, msg *lxmf.LXM
 		return
 	}
 	_ = os.MkdirAll(root, 0o755)
+	n.ensureMessagesDirToTag(root, destHashHex)
 
 	base := filepath.Base(srcPath)
 	dst := filepath.Join(root, base)
@@ -348,6 +487,9 @@ func (n *Node) moveSentFileToMessages(destHashHex, srcPath string, msg *lxmf.LXM
 		}
 	}
 
+	_ = clearXattrTag(dst, sendStateXattr)
+	_ = clearXattrTag(dst, sendLastAttemptXattr)
+
 	id := msgIDHex(msg)
 	if id != "" {
 		n.trackOutboundMessageFile(id, dst)
@@ -355,4 +497,19 @@ func (n *Node) moveSentFileToMessages(destHashHex, srcPath string, msg *lxmf.LXM
 	} else if initialState != 0 {
 		_ = setXattrTag(dst, messageStateXattr, []byte(strconv.Itoa(int(initialState))))
 	}
+}
+
+func (n *Node) ensureMessagesDirToTag(dir string, to string) {
+	if n == nil {
+		return
+	}
+	dir = strings.TrimSpace(dir)
+	to = strings.ToLower(strings.TrimSpace(to))
+	if dir == "" || to == "" {
+		return
+	}
+	if hasXattrTag(dir, messageToXattr) {
+		return
+	}
+	_ = setXattrTag(dir, messageToXattr, []byte(to))
 }

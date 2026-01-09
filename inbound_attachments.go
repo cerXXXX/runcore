@@ -14,7 +14,7 @@ import (
 var inboundAttachmentMu sync.Mutex
 var inboundAttachmentInFlight = map[string]struct{}{}
 
-func (n *Node) persistInboundAttachmentAsync(srcHashHex, prefix, name, ext, attachmentHashHex string) {
+func (n *Node) persistInboundAttachmentAsync(srcHashHex, prefix, name, ext, attachmentHashHex string, tsUnix int64, to string) {
 	if n == nil {
 		return
 	}
@@ -56,6 +56,7 @@ func (n *Node) persistInboundAttachmentAsync(srcHashHex, prefix, name, ext, atta
 		}
 		dstDir := filepath.Join(root, srcHashHex)
 		_ = os.MkdirAll(dstDir, 0o755)
+		n.ensureMessagesDirFromTag(dstDir, srcHashHex)
 
 		base := sanitizeMessageName(strings.TrimSpace(name))
 		if base == "" {
@@ -68,7 +69,9 @@ func (n *Node) persistInboundAttachmentAsync(srcHashHex, prefix, name, ext, atta
 
 		if err := copyFile(fetch.Path, dstPath); err != nil {
 			rns.Logf(rns.LOG_WARNING, "attachment fetch: persist failed src=%s err=%v", srcHashHex, err)
+			return
 		}
+		n.setInboundMessageFileTags(dstPath, tsUnix, srcHashHex, to)
 	}()
 }
 

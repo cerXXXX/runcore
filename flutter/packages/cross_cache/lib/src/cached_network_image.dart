@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
 import 'cross_cache.dart';
@@ -11,7 +10,7 @@ import 'cross_cache.dart';
 class CachedNetworkImage extends ImageProvider<NetworkImage> {
   CachedNetworkImage(
     String url,
-    CrossCache _cache, {
+    CrossCache cache, {
     Map<String, dynamic>? headers,
   }) : _inner = NetworkImage(url, headers: _stringHeaders(headers));
 
@@ -20,11 +19,6 @@ class CachedNetworkImage extends ImageProvider<NetworkImage> {
   @override
   Future<NetworkImage> obtainKey(ImageConfiguration configuration) {
     return _inner.obtainKey(configuration);
-  }
-
-  @override
-  ImageStreamCompleter loadBuffer(NetworkImage key, DecoderBufferCallback decode) {
-    return _inner.loadBuffer(key, decode);
   }
 
   @override

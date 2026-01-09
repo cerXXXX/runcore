@@ -99,6 +99,7 @@ type Node struct {
 	ifaceStateMu   sync.Mutex
 	ifaceOfflineAt map[string]time.Time
 	lastIfaceReset time.Time
+	lastIfacePersistHash [32]byte
 
 	announceInFlight int32
 	announceQueued   int32
@@ -248,6 +249,10 @@ func Start(opts Options) (*Node, error) {
 	n.startStateWatchdog()
 	n.startSendWatchdog()
 	n.startInterfaceWatchdog()
+	// Persist interface state immediately so the UI can read it right after startup.
+	if err := n.persistInterfacesSnapshotToDisk(); err != nil {
+		rns.Logf(rns.LOG_DEBUG, "runcore: persist interfaces (startup): %v", err)
+	}
 	n.AnnounceDeliveryWithReason("start")
 	return n, nil
 }
@@ -539,11 +544,17 @@ func (n *Node) startInterfaceWatchdog() {
 	// If all enabled interfaces remain offline for a short window, we hard-reset
 	// enabled interfaces (halt+resume) to recreate sockets.
 	go func() {
+		if err := n.persistInterfacesSnapshotToDisk(); err != nil {
+			rns.Logf(rns.LOG_DEBUG, "runcore: persist interfaces: %v", err)
+		}
 		t := time.NewTicker(2 * time.Second)
 		defer t.Stop()
 		for {
 			select {
 			case <-t.C:
+				if err := n.persistInterfacesSnapshotToDisk(); err != nil {
+					rns.Logf(rns.LOG_DEBUG, "runcore: persist interfaces: %v", err)
+				}
 				n.maybeResetInterfacesOnStall("watchdog")
 			case <-n.announceStop:
 				return
@@ -1087,6 +1098,11 @@ func (n *Node) startStateWatchdog() {
 		}
 		defer w.Close()
 
+		// Always keep a light poll even when fsnotify is active.
+		// Some filesystems (notably iCloud on Apple platforms) can miss rename events.
+		poll := time.NewTicker(10 * time.Second)
+		defer poll.Stop()
+
 		// Watch directories (watching files directly is less portable).
 		_ = w.Add(n.contactsDir)
 		_ = w.Add(n.opts.Dir)
@@ -1110,6 +1126,8 @@ func (n *Node) startStateWatchdog() {
 			select {
 			case <-n.announceStop:
 				return
+			case <-poll.C:
+				scan()
 			case _, ok := <-w.Events:
 				if !ok {
 					return

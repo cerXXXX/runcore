@@ -4,12 +4,19 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/svanichkin/go-lxmf/lxmf"
 	"github.com/svanichkin/go-reticulum/rns"
 )
+
+const messagesFromXattr = "from"
+const messageDateXattr = "date"
+const messageStatusXattr = "status"
+const messageToXattr = "to"
+const messageStatusUnseen = "unseen"
 
 // persistInboundMessage stores inbound LXMF messages on disk in a deterministic, app-friendly layout:
 //
@@ -37,9 +44,13 @@ func (n *Node) persistInboundMessage(m *lxmf.LXMessage) {
 		rns.Logf(rns.LOG_WARNING, "runcore: create messages src dir: %v", err)
 		return
 	}
+	// Ensure the thread folder has the sender id so UI can associate the directory.
+	n.ensureMessagesDirFromTag(dir, src)
 
 	ts := messageTime(m)
 	prefix := formatMessageMinute(ts)
+	tsUnix := ts.Unix()
+	to := strings.ToLower(strings.TrimSpace(n.DestinationHashHex()))
 
 	title := strings.TrimSpace(m.TitleAsString())
 	content := m.ContentAsString()
@@ -55,7 +66,7 @@ func (n *Node) persistInboundMessage(m *lxmf.LXMessage) {
 				name = meta.hashHex
 			}
 			caption = strings.TrimSpace(meta.caption)
-			n.persistInboundAttachmentAsync(src, prefix, name, ext, meta.hashHex)
+			n.persistInboundAttachmentAsync(src, prefix, name, ext, meta.hashHex, tsUnix, to)
 		}
 	}
 
@@ -77,12 +88,50 @@ func (n *Node) persistInboundMessage(m *lxmf.LXMessage) {
 	if name != "" && caption != "" {
 		capPath := uniquePath(filepath.Join(dir, prefix+".txt"))
 		_ = os.WriteFile(capPath, []byte(caption), 0o644)
+		n.setInboundMessageFileTags(capPath, tsUnix, src, to)
 		return
 	}
 
 	path := uniquePath(filepath.Join(dir, filename))
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		rns.Logf(rns.LOG_WARNING, "runcore: persist inbound message: %v", err)
+		return
+	}
+	n.setInboundMessageFileTags(path, tsUnix, src, to)
+}
+
+func (n *Node) ensureMessagesDirFromTag(dir string, from string) {
+	if n == nil {
+		return
+	}
+	dir = strings.TrimSpace(dir)
+	from = strings.ToLower(strings.TrimSpace(from))
+	if dir == "" || from == "" {
+		return
+	}
+	if hasXattrTag(dir, messagesFromXattr) {
+		return
+	}
+	_ = setXattrTag(dir, messagesFromXattr, []byte(from))
+}
+
+func (n *Node) setInboundMessageFileTags(path string, tsUnix int64, from string, to string) {
+	if n == nil {
+		return
+	}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return
+	}
+	from = strings.ToLower(strings.TrimSpace(from))
+	to = strings.ToLower(strings.TrimSpace(to))
+	_ = setXattrTag(path, messageDateXattr, []byte(strconv.FormatInt(tsUnix, 10)))
+	if from != "" {
+		_ = setXattrTag(path, messagesFromXattr, []byte(from))
+	}
+	_ = setXattrTag(path, messageStatusXattr, []byte(messageStatusUnseen))
+	if to != "" {
+		_ = setXattrTag(path, messageToXattr, []byte(to))
 	}
 }
 
