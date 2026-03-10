@@ -28,10 +28,24 @@ class ContactsController {
       paths: snapshot.paths,
       contacts: snapshot.contacts,
       me: snapshot.me,
+      interfaces: snapshot.interfaces,
+      announces: snapshot.announces,
       selectedContact: nextSelected,
       showMyProfileInRightPane: snapshot.me == null
           ? false
           : showMyProfileInRightPane,
+    );
+  }
+
+  Future<ChatContact?> addContactById(
+    String contactsDir,
+    String destinationId,
+    String? displayName,
+  ) {
+    return _repository.addContactById(
+      contactsDir,
+      destinationId,
+      displayName,
     );
   }
 }
@@ -41,6 +55,8 @@ class ContactsViewData {
     required this.paths,
     required this.contacts,
     required this.me,
+    required this.interfaces,
+    required this.announces,
     required this.selectedContact,
     required this.showMyProfileInRightPane,
   });
@@ -48,6 +64,8 @@ class ContactsViewData {
   final RuncorePaths paths;
   final List<ChatContact> contacts;
   final ChatContact? me;
+  final List<RuncoreInterfaceStatus> interfaces;
+  final List<RuncoreAnnounce> announces;
   final ChatContact? selectedContact;
   final bool showMyProfileInRightPane;
 }

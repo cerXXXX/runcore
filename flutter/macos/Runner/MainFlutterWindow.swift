@@ -29,7 +29,34 @@ class MainFlutterWindow: NSWindow {
           "configDir": engine.configDirPath ?? "",
         ])
       case "getMeContactName":
-        result(Self.findMeContactName(contactsDir: engine.contactsDirPath))
+        result(engine.meContactName())
+      case "getInterfaceStats":
+        result(engine.interfaceStatsJSON())
+      case "getAnnounces":
+        result(engine.announcesJSON())
+      case "setDisplayName":
+        guard let name = call.arguments as? String else {
+          result(
+            FlutterError(
+              code: "bad_args",
+              message: "setDisplayName expects String",
+              details: nil,
+            ),
+          )
+          return
+        }
+        let rc = engine.setDisplayName(name)
+        if rc == 0 {
+          result(nil)
+        } else {
+          result(
+            FlutterError(
+              code: "set_display_name_failed",
+              message: "runcore_set_display_name rc=\(rc)",
+              details: nil,
+            ),
+          )
+        }
       case "pickImagePath":
         Self.pickImagePath(result: result)
       default:
@@ -48,26 +75,6 @@ class MainFlutterWindow: NSWindow {
     // Prevent collapsing the app into an unusable narrow strip.
     contentMinSize = NSSize(width: 320, height: 680)
   }
-
-  private static func findMeContactName(contactsDir: String?) -> String {
-    guard let contactsDir, !contactsDir.isEmpty else { return "" }
-    let key = "user.runcore.me"
-    let fm = FileManager.default
-    guard let entries = try? fm.contentsOfDirectory(atPath: contactsDir) else { return "" }
-    for name in entries {
-      let p = (contactsDir as NSString).appendingPathComponent(name)
-      var isDir: ObjCBool = false
-      guard fm.fileExists(atPath: p, isDirectory: &isDir), isDir.boolValue else { continue }
-      let has = p.withCString { cPath in
-        key.withCString { cKey in
-          getxattr(cPath, cKey, nil, 0, 0, 0) >= 0
-        }
-      }
-      if has { return name }
-    }
-    return ""
-  }
-
   private static func pickImagePath(result: @escaping FlutterResult) {
     if !Thread.isMainThread {
       DispatchQueue.main.async {

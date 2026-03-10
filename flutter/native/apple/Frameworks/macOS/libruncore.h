@@ -101,6 +101,7 @@ extern int32_t runcore_stop(uint64_t handle);
 extern void runcore_set_log_cb(runcore_log_cb cb, void* userData);
 extern void runcore_set_loglevel(int32_t level);
 extern char* runcore_config_dir(uint64_t handle);
+extern char* runcore_destination_hash_hex(uint64_t handle);
 extern int32_t runcore_set_display_name(uint64_t handle, char* displayName);
 extern int32_t runcore_restart(uint64_t handle);
 extern char* runcore_interface_stats_json(uint64_t handle);

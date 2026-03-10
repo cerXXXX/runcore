@@ -30,6 +30,17 @@ import Darwin
                     ])
                 case "getMeContactName":
                     result(self.findMeContactName(contactsDir: self.runcore.contactsDirPath))
+                case "getInterfaceStats":
+                    result(self.runcore.interfaceStatsJSON())
+                case "getAnnounces":
+                    result(self.runcore.announcesJSON())
+                case "setDisplayName":
+                    guard let name = call.arguments as? String else {
+                        result(FlutterError(code: "bad_args", message: "setDisplayName expects String", details: nil))
+                        return
+                    }
+                    self.runcore.setDisplayName(name)
+                    result(nil)
                 case "pickImagePath":
                     self.pickImagePath(result: result)
                 default:

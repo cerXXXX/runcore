@@ -1,6 +1,13 @@
 import 'dart:io';
 
+import '../../../core/platform/runcore_channel.dart';
+
 class ProfileRepository {
+  ProfileRepository({RuncoreChannel? channel})
+    : _channel = channel ?? RuncoreChannel();
+
+  final RuncoreChannel _channel;
+
   Future<void> apply({
     required String contactDirPath,
     required String? avatarPath,
@@ -13,16 +20,14 @@ class ProfileRepository {
     }
 
     final desired = sanitizeFolderName(pendingName);
-    final currentName = _leafName(contactDir.path);
     var resolvedDir = contactDir;
-
-    if (desired.isNotEmpty && desired != currentName) {
+    if (desired.isNotEmpty) {
+      await _channel.setDisplayName(desired);
       final parent = contactDir.parent.path;
       final target = Directory('$parent${Platform.pathSeparator}$desired');
       if (target.existsSync()) {
-        throw StateError('Контакт с именем "$desired" уже существует');
+        resolvedDir = target;
       }
-      resolvedDir = await contactDir.rename(target.path);
     }
 
     if (pendingAvatarPath != avatarPath && pendingAvatarPath != null) {
@@ -53,5 +58,4 @@ class ProfileRepository {
     return s;
   }
 
-  String _leafName(String path) => path.split(Platform.pathSeparator).last;
 }

@@ -95,10 +95,10 @@ type Node struct {
 	announceStop     chan struct{}
 	announceStopOnce sync.Once
 
-	networkResetMu sync.Mutex
-	ifaceStateMu   sync.Mutex
-	ifaceOfflineAt map[string]time.Time
-	lastIfaceReset time.Time
+	networkResetMu       sync.Mutex
+	ifaceStateMu         sync.Mutex
+	ifaceOfflineAt       map[string]time.Time
+	lastIfaceReset       time.Time
 	lastIfacePersistHash [32]byte
 
 	announceInFlight int32
@@ -197,8 +197,8 @@ func Start(opts Options) (*Node, error) {
 	n.contactsDir = n.opts.ContactsDir
 	_ = os.MkdirAll(n.contactsDir, 0o755)
 	rns.Logf(rns.LOG_NOTICE, "runcore: contacts dir=%q", n.contactsDir)
-	if dir, finalName, err := n.ensureMeContactDir(""); err == nil && dir != "" {
-		n.displayName = finalName
+	if dir, err := n.findMeContactDir(); err == nil && dir != "" {
+		n.displayName = filepath.Base(dir)
 		n.meDirMu.Lock()
 		n.meDir = dir
 		n.meDirMu.Unlock()
@@ -219,6 +219,12 @@ func Start(opts Options) (*Node, error) {
 	}
 	n.router = router
 	n.deliveryDestIn = delivery
+	if dir, finalName, err := n.ensureMeContactDir(n.displayName); err == nil && dir != "" {
+		n.displayName = finalName
+		n.meDirMu.Lock()
+		n.meDir = dir
+		n.meDirMu.Unlock()
+	}
 
 	n.sendDir = strings.TrimSpace(n.opts.SendDir)
 	n.ensureAnnounceStorageDir()

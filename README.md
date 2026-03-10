@@ -16,10 +16,9 @@
 
 - Flutter app lives in `flutter/` (Dart UI).
 - iOS host app is `flutter/ios/Runner` and links `Runcore.xcframework` from `flutter/native/apple/Frameworks/iOS`.
-- Legacy SwiftUI app project remains under `flutter/native/apple/App/iOS/Runcore.xcodeproj` (kept for reference).
 
 ## Screenshots
-Screenshots below are from the legacy SwiftUI app; Flutter UI will differ.
+Screenshots below may differ from the current Flutter UI.
 
 | Chat with images | Add new contact |
 | --- | --- |

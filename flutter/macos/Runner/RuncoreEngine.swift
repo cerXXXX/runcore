@@ -5,6 +5,7 @@ final class RuncoreEngine {
     static let shared = RuncoreEngine()
 
     private var handle: runcore_handle_t = 0
+    private var cachedDestinationHashHex: String = ""
 
     var onLogLine: ((_ level: Int32, _ line: String) -> Void)?
     var logLevel: Int32 = 3
@@ -16,6 +17,7 @@ final class RuncoreEngine {
 
     func start() {
         guard handle == 0 else { return }
+        cachedDestinationHashHex = ""
 
         runcore_set_log_cb({ userData, level, line in
             guard let userData else { return }
@@ -65,6 +67,66 @@ final class RuncoreEngine {
         runcore_set_loglevel(level)
     }
 
+    func setDisplayName(_ name: String) -> Int32 {
+        guard handle != 0 else { return 1 }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rc = trimmed.withCString { cName in
+            runcore_set_display_name(handle, cName)
+        }
+        if rc == 0 {
+            cachedDestinationHashHex = ""
+        }
+        return rc
+    }
+
+    func destinationHashHex() -> String {
+        if !cachedDestinationHashHex.isEmpty {
+            return cachedDestinationHashHex
+        }
+        guard handle != 0 else { return "" }
+        guard let ptr = runcore_destination_hash_hex(handle) else { return "" }
+        defer { runcore_free_string(ptr) }
+        let value = String(cString: ptr).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        cachedDestinationHashHex = value
+        return value
+    }
+
+    func interfaceStatsJSON() -> String {
+        guard handle != 0 else { return "{}" }
+        guard let ptr = runcore_interface_stats_json(handle) else { return "" }
+        defer { runcore_free_string(ptr) }
+        return String(cString: ptr)
+    }
+
+    func announcesJSON() -> String {
+        guard let configDirPath, !configDirPath.isEmpty else { return "" }
+        let path = (configDirPath as NSString).appendingPathComponent("storage/announces.json")
+        return (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+    }
+
+    func meContactName() -> String {
+        guard let contactsDirPath, !contactsDirPath.isEmpty else { return "" }
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(atPath: contactsDirPath) else { return "" }
+
+        let ownDestination = destinationHashHex()
+        if !ownDestination.isEmpty {
+            for name in entries.sorted() {
+                let dirPath = (contactsDirPath as NSString).appendingPathComponent(name)
+                var isDir: ObjCBool = false
+                guard fm.fileExists(atPath: dirPath, isDirectory: &isDir), isDir.boolValue else { continue }
+                let lxmfPath = (dirPath as NSString).appendingPathComponent("lxmf")
+                guard let raw = try? String(contentsOfFile: lxmfPath, encoding: .utf8) else { continue }
+                let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if value == ownDestination {
+                    return name
+                }
+            }
+        }
+
+        return meContactNameByXattr(in: contactsDirPath, entries: entries)
+    }
+
     private func systemConfigDir() -> String {
         let fm = FileManager.default
         let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -82,5 +144,23 @@ final class RuncoreEngine {
         }
         return systemConfigDir()
     }
-}
 
+    private func meContactNameByXattr(in contactsDir: String, entries: [String]) -> String {
+        let fm = FileManager.default
+        let key = "user.runcore.me"
+        for name in entries.sorted() {
+            let path = (contactsDir as NSString).appendingPathComponent(name)
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue else { continue }
+            let has = path.withCString { cPath in
+                key.withCString { cKey in
+                    getxattr(cPath, cKey, nil, 0, 0, 0) >= 0
+                }
+            }
+            if has {
+                return name
+            }
+        }
+        return ""
+    }
+}

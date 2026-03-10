@@ -15,6 +15,7 @@ class ProfilePage extends StatefulWidget {
     this.avatarPath,
     this.onClose,
     this.onApplied,
+    this.embedded = false,
   });
 
   final String contactDirPath;
@@ -23,6 +24,7 @@ class ProfilePage extends StatefulWidget {
   final String? avatarPath;
   final VoidCallback? onClose;
   final VoidCallback? onApplied;
+  final bool embedded;
 
   @override
   State<ProfilePage> createState() => _ProfilePageState();
@@ -124,6 +126,80 @@ class _ProfilePageState extends State<ProfilePage> {
     final theme = Theme.of(context);
     final avatar = _pendingAvatarPath;
     final canDone = _dirty;
+    final content = ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Center(
+          child: Stack(
+            children: [
+              ClipOval(
+                child: Container(
+                  width: 336,
+                  height: 336,
+                  color: theme.colorScheme.surfaceContainerHighest,
+                  child: avatar == null
+                      ? Icon(
+                          Icons.person,
+                          size: 144,
+                          color: theme.colorScheme.onSurfaceVariant,
+                        )
+                      : Image.file(File(avatar), fit: BoxFit.cover),
+                ),
+              ),
+              Positioned(
+                right: 12,
+                bottom: 12,
+                child: Material(
+                  color: theme.colorScheme.surface,
+                  shape: const CircleBorder(),
+                  elevation: 2,
+                  child: IconButton(
+                    icon: const Icon(Icons.edit),
+                    onPressed: _pickAvatar,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 20),
+        Center(
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                _pendingName.isEmpty ? 'Без имени' : _pendingName,
+                style: theme.textTheme.titleMedium,
+              ),
+              IconButton(icon: const Icon(Icons.edit), onPressed: _editName),
+            ],
+          ),
+        ),
+        const SizedBox(height: 6),
+        Center(
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                widget.lxmfId,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.hintColor,
+                ),
+              ),
+              IconButton(
+                tooltip: 'Copy',
+                icon: const Icon(Icons.copy),
+                onPressed: _copyId,
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+
+    if (widget.embedded) {
+      return content;
+    }
 
     return Scaffold(
       appBar: AppBar(
@@ -132,76 +208,7 @@ class _ProfilePageState extends State<ProfilePage> {
           if (canDone) TextButton(onPressed: _apply, child: const Text('Done')),
         ],
       ),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          Center(
-            child: Stack(
-              children: [
-                ClipOval(
-                  child: Container(
-                    width: 280,
-                    height: 280,
-                    color: theme.colorScheme.surfaceContainerHighest,
-                    child: avatar == null
-                        ? Icon(
-                            Icons.person,
-                            size: 120,
-                            color: theme.colorScheme.onSurfaceVariant,
-                          )
-                        : Image.file(File(avatar), fit: BoxFit.cover),
-                  ),
-                ),
-                Positioned(
-                  right: 12,
-                  bottom: 12,
-                  child: Material(
-                    color: theme.colorScheme.surface,
-                    shape: const CircleBorder(),
-                    elevation: 2,
-                    child: IconButton(
-                      icon: const Icon(Icons.edit),
-                      onPressed: _pickAvatar,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 20),
-          Center(
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  _pendingName.isEmpty ? 'Без имени' : _pendingName,
-                  style: theme.textTheme.titleMedium,
-                ),
-                IconButton(icon: const Icon(Icons.edit), onPressed: _editName),
-              ],
-            ),
-          ),
-          const SizedBox(height: 6),
-          Center(
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  widget.lxmfId,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.hintColor,
-                  ),
-                ),
-                IconButton(
-                  tooltip: 'Copy',
-                  icon: const Icon(Icons.copy),
-                  onPressed: _copyId,
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
+      body: content,
     );
   }
 }

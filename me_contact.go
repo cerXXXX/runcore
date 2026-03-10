@@ -28,9 +28,10 @@ func (n *Node) ensureMeContactDir(desiredName string) (string, string, error) {
 			if finalDesired != finalName {
 				target := filepath.Join(n.contactsDir, finalDesired)
 				_ = os.MkdirAll(filepath.Dir(target), 0o755)
-				_ = os.Rename(currentDir, target)
-				currentDir = target
-				finalName = finalDesired
+				if err := os.Rename(currentDir, target); err == nil {
+					currentDir = target
+					finalName = finalDesired
+				}
 			}
 		}
 		n.clearOtherMeTags(currentDir)

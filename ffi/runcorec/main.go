@@ -186,6 +186,15 @@ func runcore_config_dir(handle C.uint64_t) *C.char {
 	return allocCString(h.node.ConfigDir())
 }
 
+//export runcore_destination_hash_hex
+func runcore_destination_hash_hex(handle C.uint64_t) *C.char {
+	h := getHandle(handle)
+	if h == nil || h.node == nil {
+		return nil
+	}
+	return allocCString(h.node.DestinationHashHex())
+}
+
 //export runcore_set_display_name
 func runcore_set_display_name(handle C.uint64_t, displayName *C.char) C.int32_t {
 	h := getHandle(handle)

@@ -1,4 +1,4 @@
-import 'dart:io';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 
@@ -9,6 +9,7 @@ import '../../profile/presentation/profile_page.dart';
 import '../application/contacts_controller.dart';
 import '../data/contacts_repository.dart';
 import '../domain/chat_contact.dart';
+import 'chats_sidebar.dart';
 
 class ChatsPage extends StatefulWidget {
   const ChatsPage({super.key});
@@ -19,6 +20,7 @@ class ChatsPage extends StatefulWidget {
 
 class _ChatsPageState extends State<ChatsPage> {
   late final ContactsController _controller;
+  Timer? _refreshTimer;
 
   RuncorePaths? _paths;
   String? _error;
@@ -28,12 +30,15 @@ class _ChatsPageState extends State<ChatsPage> {
   String _chatQuery = '';
   bool _showChatSearch = false;
   ChatContact? _me;
+  List<RuncoreInterfaceStatus> _interfaces = const [];
+  List<RuncoreAnnounce> _announces = const [];
   bool _showMyProfileInRightPane = false;
+  bool _showSelectedContactProfileInRightPane = false;
   double? _masterWidth;
   bool _showCompactSidebar = true;
 
-  static const double _minMasterWidth = 320;
-  static const double _maxMasterWidth = 420;
+  static const double _minMasterWidth = 260;
+  static const double _maxMasterWidth = 340;
   static const double _minDetailWidth = 320;
   static const double _dividerWidth = 8;
   static const double _compactCollapseWidth = 820;
@@ -52,6 +57,17 @@ class _ChatsPageState extends State<ChatsPage> {
       repository: ContactsRepository(channel: RuncoreChannel()),
     );
     _refresh();
+    _refreshTimer = Timer.periodic(const Duration(seconds: 4), (_) {
+      if (mounted) {
+        _refresh();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _refreshTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _refresh() async {
@@ -71,8 +87,13 @@ class _ChatsPageState extends State<ChatsPage> {
         _paths = data.paths;
         _contacts = data.contacts;
         _me = data.me;
+        _interfaces = data.interfaces;
+        _announces = data.announces;
         _selectedContact = data.selectedContact;
         _showMyProfileInRightPane = data.showMyProfileInRightPane;
+        if (_selectedContact == null) {
+          _showSelectedContactProfileInRightPane = false;
+        }
       });
     } catch (e) {
       if (!mounted) {
@@ -91,12 +112,14 @@ class _ChatsPageState extends State<ChatsPage> {
     if (isWide) {
       setState(() {
         _showMyProfileInRightPane = true;
+        _showSelectedContactProfileInRightPane = false;
         _showCompactSidebar = false;
       });
       return;
     }
     setState(() {
       _showMyProfileInRightPane = true;
+      _showSelectedContactProfileInRightPane = false;
       _showCompactSidebar = false;
     });
   }
@@ -111,6 +134,7 @@ class _ChatsPageState extends State<ChatsPage> {
       setState(() {
         _selectedContact = match.first;
         _showMyProfileInRightPane = false;
+        _showSelectedContactProfileInRightPane = false;
         _showCompactSidebar = false;
         _showChatSearch = false;
         _chatQuery = '';
@@ -141,6 +165,7 @@ class _ChatsPageState extends State<ChatsPage> {
       setState(() {
         _selectedContact = selected;
         _showMyProfileInRightPane = false;
+        _showSelectedContactProfileInRightPane = false;
         _showCompactSidebar = false;
         _showChatSearch = false;
         _chatQuery = '';
@@ -148,6 +173,211 @@ class _ChatsPageState extends State<ChatsPage> {
       return;
     }
     _openChat(p, selected.destHashHex);
+  }
+
+  Future<void> _addContactById() async {
+    final paths = _paths;
+    if (paths == null) {
+      return;
+    }
+    final controller = TextEditingController();
+    final input = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Добавить контакт'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            border: OutlineInputBorder(),
+            hintText: 'LXMF id',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(null),
+            child: const Text('Отменить'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(controller.text),
+            child: const Text('Добавить'),
+          ),
+        ],
+      ),
+    );
+    final destinationId = (input ?? '').trim();
+    if (!mounted || destinationId.isEmpty) {
+      return;
+    }
+    try {
+      final contact = await _controller.addContactById(
+        paths.contactsDir,
+        destinationId,
+        null,
+      );
+      await _refresh();
+      if (!mounted || contact == null || contact.destHashHex.isEmpty) {
+        return;
+      }
+      setState(() {
+        _selectedContact = contact;
+        _showMyProfileInRightPane = false;
+        _showSelectedContactProfileInRightPane = false;
+        _showCompactSidebar = false;
+      });
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+    }
+  }
+
+  Future<void> _openRadar() async {
+    final announces = await _loadRadarAnnounces();
+    if (!mounted) {
+      return;
+    }
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setRadarState) => AlertDialog(
+          title: const Text('Network radar'),
+          content: SizedBox(
+            width: 420,
+            child: SizedBox(
+              height: 320,
+              child: _RadarList(
+                entries: announces,
+                onTapEntry: (entry) async {
+                  final addedId = await _promptAddContact(entry);
+                  if (addedId != null) {
+                    final refreshed = await _loadRadarAnnounces();
+                    if (!ctx.mounted) {
+                      return;
+                    }
+                    setRadarState(() {
+                      announces.removeWhere(
+                        (item) =>
+                            item.destinationHashHex.trim().toLowerCase() ==
+                            addedId.trim().toLowerCase(),
+                      );
+                      announces
+                        ..clear()
+                        ..addAll(refreshed);
+                    });
+                  }
+                },
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Close'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<List<RuncoreAnnounce>> _loadRadarAnnounces() async {
+    final allAnnounces = await RuncoreChannel().getAnnounces();
+    final knownIds =
+        _contacts.map((c) => c.destHashHex.trim().toLowerCase()).toSet();
+    if (_me != null && _me!.destHashHex.isNotEmpty) {
+      knownIds.add(_me!.destHashHex.trim().toLowerCase());
+    }
+    return allAnnounces
+        .where(
+          (item) =>
+              !knownIds.contains(item.destinationHashHex.trim().toLowerCase()),
+        )
+        .toList(growable: true);
+  }
+
+  Future<String?> _promptAddContact(RuncoreAnnounce entry) async {
+    final paths = _paths;
+    if (paths == null) {
+      return null;
+    }
+    final initialName = entry.displayName.trim();
+    final needsNameInput = initialName.isEmpty;
+    final nameController = TextEditingController(text: initialName);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Добавить контакт'),
+        content: SizedBox(
+          width: 420,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SelectableText(
+                entry.destinationHashHex,
+                style: Theme.of(ctx).textTheme.bodySmall,
+              ),
+              if (needsNameInput) ...[
+                const SizedBox(height: 12),
+                TextField(
+                  controller: nameController,
+                  autofocus: true,
+                  decoration: const InputDecoration(
+                    border: OutlineInputBorder(),
+                    hintText: 'Имя контакта',
+                  ),
+                ),
+              ] else ...[
+                const SizedBox(height: 12),
+                Text(
+                  initialName,
+                  style: Theme.of(ctx).textTheme.titleSmall,
+                ),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Отменить'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Добавить'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || confirmed != true) {
+      return null;
+    }
+    try {
+      final contact = await _controller.addContactById(
+        paths.contactsDir,
+        entry.destinationHashHex,
+        needsNameInput ? nameController.text : initialName,
+      );
+      await _refresh();
+      if (!mounted || contact == null || contact.destHashHex.isEmpty) {
+        return null;
+      }
+      setState(() {
+        _selectedContact = contact;
+        _showMyProfileInRightPane = false;
+        _showSelectedContactProfileInRightPane = false;
+        _showCompactSidebar = false;
+      });
+      return contact.destHashHex;
+    } catch (e) {
+      if (!mounted) {
+        return null;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+      return null;
+    }
   }
 
   double _masterWidthFor(double width) {
@@ -183,14 +413,29 @@ class _ChatsPageState extends State<ChatsPage> {
       _chatQuery = '';
       _selectedContact = null;
       _showMyProfileInRightPane = false;
+      _showSelectedContactProfileInRightPane = false;
     });
   }
 
   bool get _isCompactDetailVisible =>
-      _showMyProfileInRightPane || _selectedContact != null;
+      _showMyProfileInRightPane ||
+      _showSelectedContactProfileInRightPane ||
+      _selectedContact != null;
 
   bool get _isChatDetailVisible =>
-      !_showMyProfileInRightPane && _selectedContact != null;
+      !_showMyProfileInRightPane &&
+      !_showSelectedContactProfileInRightPane &&
+      _selectedContact != null;
+
+  String _lastSeenLabelFor(String destHashHex) {
+    final normalized = destHashHex.trim().toLowerCase();
+    for (final item in _announces) {
+      if (item.destinationHashHex.trim().toLowerCase() == normalized) {
+        return formatLastSeen(item.lastSeen);
+      }
+    }
+    return 'был давно';
+  }
 
   PreferredSizeWidget _buildCompactAppBar() {
     if (_isCompactDetailVisible) {
@@ -205,9 +450,7 @@ class _ChatsPageState extends State<ChatsPage> {
         actions: !_isChatDetailVisible
             ? null
             : [
-                IconButton(
-                  tooltip: 'Search',
-                  icon: Icon(_showChatSearch ? Icons.search_off : Icons.search),
+                _searchToggleButton(
                   onPressed: () => setState(() {
                     _showChatSearch = !_showChatSearch;
                     if (!_showChatSearch) {
@@ -246,6 +489,22 @@ class _ChatsPageState extends State<ChatsPage> {
         onClose: () => setState(() => _showMyProfileInRightPane = false),
         onApplied: () async {
           setState(() => _showMyProfileInRightPane = false);
+          await _refresh();
+        },
+      );
+    }
+    if (_showSelectedContactProfileInRightPane && _selectedContact != null) {
+      return ProfilePage(
+        contactDirPath: _selectedContact!.dirPath,
+        displayName: _selectedContact!.name,
+        lxmfId: _selectedContact!.destHashHex,
+        avatarPath: _selectedContact!.avatarPath,
+        embedded: true,
+        onClose: () => setState(() {
+          _showSelectedContactProfileInRightPane = false;
+        }),
+        onApplied: () async {
+          setState(() => _showSelectedContactProfileInRightPane = false);
           await _refresh();
         },
       );
@@ -327,93 +586,55 @@ class _ChatsPageState extends State<ChatsPage> {
     );
   }
 
-  Widget _buildContactsList(RuncorePaths p, {required bool isWide}) {
-    final items = _filteredContacts();
-    return RefreshIndicator(
-      onRefresh: _refresh,
-      child: ListView(
-        children: [
-          for (final c in items)
-            SidebarListItem(
-              selected:
-                  isWide && _selectedContact?.destHashHex == c.destHashHex,
-              selectedColor: _selectedItemColor(context),
-              onTap: c.destHashHex.isEmpty
-                  ? null
-                  : () {
-                      if (isWide) {
-                        setState(() {
-                          _selectedContact = c;
-                          _showMyProfileInRightPane = false;
-                          _showCompactSidebar = false;
-                          _showChatSearch = false;
-                          _chatQuery = '';
-                        });
-                      } else {
-                        _openChat(p, c.destHashHex);
-                      }
-                    },
-              leading: ContactAvatar(contact: c),
-              title: Text(c.name),
-              subtitle: Text(
-                c.destHashHex.isEmpty ? '(нет lxmf)' : c.destHashHex,
-              ),
-              trailing: const Icon(Icons.chevron_right, size: 22),
-            ),
-        ],
+  Widget _searchToggleButton({required VoidCallback onPressed}) {
+    return IconButton(
+      tooltip: 'Search',
+      icon: const Icon(Icons.search),
+      style: IconButton.styleFrom(
+        backgroundColor: _showChatSearch ? _selectedItemColor(context) : null,
       ),
+      onPressed: onPressed,
     );
   }
 
   Widget _buildWideSidebar(RuncorePaths p) {
-    return Material(
-      color: Theme.of(context).scaffoldBackgroundColor,
-      child: SafeArea(
-        bottom: false,
-        child: Column(
-          children: [
-            if (_me != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 28),
-                child: SidebarListItem(
-                  selected: _showMyProfileInRightPane,
-                  selectedColor: _selectedItemColor(context),
-                  onTap: () {
-                    setState(() {
-                      _selectedContact = null;
-                    });
-                    _openMyProfile();
-                  },
-                  leading: ContactAvatar(contact: _me!, radius: 18),
-                  title: Text(
-                    _me!.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.titleSmall,
-                  ),
-                ),
-              ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 6, 12, 0),
-              child: SizedBox(
-                height: 48,
-                child: TextField(
-                  style: Theme.of(context).textTheme.bodySmall,
-                  decoration: _searchDecoration(
-                    hintText: 'Search',
-                    onClear: _contactsQuery.isEmpty
-                        ? null
-                        : () => setState(() => _contactsQuery = ''),
-                    showClear: _contactsQuery.isNotEmpty,
-                  ),
-                  onChanged: (v) => setState(() => _contactsQuery = v),
-                ),
-              ),
-            ),
-            Expanded(child: _buildContactsList(p, isWide: true)),
-          ],
-        ),
-      ),
+    return ChatsSidebar(
+      me: _me,
+      interfaces: _interfaces,
+      announces: _announces,
+      contacts: _filteredContacts(),
+      selectedContact: _selectedContact,
+      showMyProfileInRightPane: _showMyProfileInRightPane,
+      selectedColor: _selectedItemColor(context),
+      contactsQuery: _contactsQuery,
+      onContactsQueryChanged: (v) => setState(() => _contactsQuery = v),
+      onClearContactsQuery: _contactsQuery.isEmpty
+          ? null
+          : () => setState(() => _contactsQuery = ''),
+      onOpenMyProfile: () {
+        setState(() {
+          _selectedContact = null;
+          _showSelectedContactProfileInRightPane = false;
+        });
+        _openMyProfile();
+      },
+      onAddContact: _addContactById,
+      onOpenRadar: _openRadar,
+      onSelectContact: (c) {
+        if (_isSplitLayout(MediaQuery.sizeOf(context).width)) {
+          setState(() {
+            _selectedContact = c;
+            _showMyProfileInRightPane = false;
+            _showSelectedContactProfileInRightPane = false;
+            _showCompactSidebar = false;
+            _showChatSearch = false;
+            _chatQuery = '';
+          });
+          return;
+        }
+        _openChat(p, c.destHashHex);
+      },
+      onRefresh: _refresh,
     );
   }
 
@@ -433,49 +654,88 @@ class _ChatsPageState extends State<ChatsPage> {
               child: Row(
                 children: [
                   Expanded(
-                    child: _isChatDetailVisible
-                        ? Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              _selectedContact?.avatarPath != null
-                                  ? CircleAvatar(
-                                      radius: 18,
-                                      backgroundImage: FileImage(
-                                        File(_selectedContact!.avatarPath!),
-                                      ),
-                                    )
-                                  : CircleAvatar(
-                                      radius: 18,
-                                      backgroundColor: Theme.of(
-                                        context,
-                                      ).colorScheme.surfaceContainerHighest,
-                                      child: Text(
-                                        _selectedContact!.name.isEmpty
-                                            ? '?'
-                                            : _selectedContact!.name[0]
-                                                  .toUpperCase(),
-                                        style: Theme.of(
-                                          context,
-                                        ).textTheme.labelSmall,
-                                      ),
+                    child:
+                        (_isChatDetailVisible ||
+                            _showSelectedContactProfileInRightPane)
+                        ? Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 12),
+                            child: Align(
+                              alignment: Alignment.centerLeft,
+                              child: Material(
+                                color: _showSelectedContactProfileInRightPane
+                                    ? _selectedItemColor(context)
+                                    : Colors.transparent,
+                                borderRadius: BorderRadius.circular(14),
+                                child: InkWell(
+                                  borderRadius: BorderRadius.circular(14),
+                                  onTap: () => setState(() {
+                                    _showSelectedContactProfileInRightPane =
+                                        !_showSelectedContactProfileInRightPane;
+                                    _showMyProfileInRightPane = false;
+                                    _showChatSearch = false;
+                                    if (!_showSelectedContactProfileInRightPane) {
+                                      _chatQuery = '';
+                                    }
+                                  }),
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 10,
+                                      vertical: 6,
                                     ),
-                              const SizedBox(height: 2),
-                              Text(
-                                _selectedContact!.name,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: Theme.of(context).textTheme.labelMedium,
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        AvatarCircle(
+                                          radius: 16,
+                                          avatarPath:
+                                              _selectedContact!.avatarPath,
+                                          name: _selectedContact!.name,
+                                          colorSeed:
+                                              _selectedContact!.destHashHex,
+                                        ),
+                                        const SizedBox(width: 10),
+                                        ConstrainedBox(
+                                          constraints: const BoxConstraints(
+                                            maxWidth: 240,
+                                          ),
+                                          child: Column(
+                                            mainAxisSize: MainAxisSize.min,
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              Text(
+                                                _selectedContact!.name,
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: Theme.of(
+                                                  context,
+                                                ).textTheme.titleSmall,
+                                              ),
+                                              const SizedBox(height: 1),
+                                              Text(
+                                                _lastSeenLabelFor(
+                                                  _selectedContact!.destHashHex,
+                                                ),
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: Theme.of(
+                                                  context,
+                                                ).textTheme.bodySmall,
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
                               ),
-                            ],
+                            ),
                           )
                         : const SizedBox.shrink(),
                   ),
                   if (_isChatDetailVisible)
-                    IconButton(
-                      tooltip: 'Search',
-                      icon: Icon(
-                        _showChatSearch ? Icons.search_off : Icons.search,
-                      ),
+                    _searchToggleButton(
                       onPressed: () => setState(() {
                         _showChatSearch = !_showChatSearch;
                         if (!_showChatSearch) {
@@ -654,6 +914,66 @@ class _ChatsPageState extends State<ChatsPage> {
   }
 }
 
+class _RadarList extends StatelessWidget {
+  const _RadarList({required this.entries, required this.onTapEntry});
+
+  final List<RuncoreAnnounce> entries;
+  final ValueChanged<RuncoreAnnounce> onTapEntry;
+
+  @override
+  Widget build(BuildContext context) {
+    if (entries.isEmpty) {
+      return const Center(child: Text('Nothing discovered yet'));
+    }
+    return ListView.builder(
+      itemCount: entries.length,
+      itemBuilder: (context, index) {
+        final item = entries[index];
+        return ListTile(
+          leading: AvatarCircle(
+            radius: 20,
+            avatarPath: null,
+            name: item.title,
+            colorSeed: item.destinationHashHex,
+          ),
+          title: Text(
+            item.title,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          subtitle: Text(
+            formatLastSeen(item.lastSeen),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          onTap: () => onTapEntry(item),
+        );
+      },
+    );
+  }
+
+}
+
+String formatLastSeen(int unixSeconds) {
+  if (unixSeconds <= 0) {
+    return 'был давно';
+  }
+  final announcedAt = DateTime.fromMillisecondsSinceEpoch(
+    unixSeconds * 1000,
+  );
+  final diff = DateTime.now().difference(announcedAt);
+  if (diff.inSeconds < 60) {
+    return 'just now';
+  }
+  if (diff.inMinutes < 60) {
+    return '${diff.inMinutes} min ago';
+  }
+  if (diff.inHours < 24) {
+    return '${diff.inHours} h ago';
+  }
+  return '${diff.inDays} d ago';
+}
+
 class ContactsSearchDelegate extends SearchDelegate<ChatContact?> {
   ContactsSearchDelegate(this.contacts);
 
@@ -720,99 +1040,6 @@ class ContactsSearchDelegate extends SearchDelegate<ChatContact?> {
           onTap: c.destHashHex.isEmpty ? null : () => close(context, c),
         );
       },
-    );
-  }
-}
-
-class ContactAvatar extends StatelessWidget {
-  const ContactAvatar({super.key, required this.contact, this.radius});
-
-  final ChatContact contact;
-  final double? radius;
-
-  @override
-  Widget build(BuildContext context) {
-    final avatar = CircleAvatar(
-      radius: radius,
-      backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
-      backgroundImage: contact.avatarPath == null
-          ? null
-          : FileImage(File(contact.avatarPath!)),
-      child: contact.avatarPath == null
-          ? Text(contact.name.isEmpty ? '?' : contact.name[0].toUpperCase())
-          : null,
-    );
-    if (radius != null) {
-      return avatar;
-    }
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 10),
-      child: avatar,
-    );
-  }
-}
-
-class SidebarListItem extends StatelessWidget {
-  const SidebarListItem({
-    super.key,
-    required this.selected,
-    required this.selectedColor,
-    required this.leading,
-    required this.title,
-    this.subtitle,
-    this.trailing,
-    this.onTap,
-  });
-
-  static const EdgeInsets outerPadding = EdgeInsets.fromLTRB(10, 2, 10, 2);
-  static const EdgeInsets innerPadding = EdgeInsets.symmetric(
-    horizontal: 12,
-    vertical: 8,
-  );
-
-  final bool selected;
-  final Color selectedColor;
-  final Widget leading;
-  final Widget title;
-  final Widget? subtitle;
-  final Widget? trailing;
-  final VoidCallback? onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: outerPadding,
-      child: Material(
-        color: selected ? selectedColor : Colors.transparent,
-        borderRadius: BorderRadius.circular(14),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(14),
-          onTap: onTap,
-          child: Padding(
-            padding: innerPadding,
-            child: Row(
-              children: [
-                leading,
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      title,
-                      if (subtitle != null) ...[
-                        const SizedBox(height: 2),
-                        subtitle!,
-                      ],
-                    ],
-                  ),
-                ),
-                if (trailing != null) ...[const SizedBox(width: 8), trailing!],
-              ],
-            ),
-          ),
-        ),
-      ),
     );
   }
 }
