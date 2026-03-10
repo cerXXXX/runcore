@@ -3,7 +3,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../../main.dart';
+import '../../../core/platform/runcore_channel.dart';
+import '../data/profile_repository.dart';
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({
@@ -28,10 +29,15 @@ class ProfilePage extends StatefulWidget {
 }
 
 class _ProfilePageState extends State<ProfilePage> {
+  final RuncoreChannel _channel = RuncoreChannel();
+  final ProfileRepository _repository = ProfileRepository();
+
   late String _pendingName;
   String? _pendingAvatarPath;
 
-  bool get _dirty => _pendingName != widget.displayName || _pendingAvatarPath != widget.avatarPath;
+  bool get _dirty =>
+      _pendingName != widget.displayName ||
+      _pendingAvatarPath != widget.avatarPath;
 
   @override
   void initState() {
@@ -41,9 +47,10 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   Future<void> _pickAvatar() async {
-    final path = await RuncoreChannel.pickImagePath();
-    if (!mounted) return;
-    if (path == null || path.trim().isEmpty) return;
+    final path = await _channel.pickImagePath();
+    if (!mounted || path == null || path.trim().isEmpty) {
+      return;
+    }
     setState(() => _pendingAvatarPath = path.trim());
   }
 
@@ -59,7 +66,10 @@ class _ProfilePageState extends State<ProfilePage> {
           decoration: const InputDecoration(border: OutlineInputBorder()),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.of(ctx).pop(null), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(null),
+            child: const Text('Cancel'),
+          ),
           FilledButton(
             onPressed: () => Navigator.of(ctx).pop(controller.text),
             child: const Text('OK'),
@@ -67,55 +77,41 @@ class _ProfilePageState extends State<ProfilePage> {
         ],
       ),
     );
-    if (!mounted) return;
-    if (res == null) return;
+    if (!mounted || res == null) {
+      return;
+    }
     setState(() => _pendingName = res.trim());
   }
 
   Future<void> _copyId() async {
     await Clipboard.setData(ClipboardData(text: widget.lxmfId));
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Скопировано')));
-  }
-
-  String _sanitizeFolderName(String s) {
-    s = s.trim();
-    if (s.isEmpty) return 'Contact';
-    s = s.replaceAll(Platform.pathSeparator, '_').replaceAll(':', '_').replaceAll('\u0000', '_');
-    if (s.length > 80) s = s.substring(0, 80);
-    return s;
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Скопировано')));
   }
 
   Future<void> _apply() async {
-    final contactDir = Directory(widget.contactDirPath);
-    if (!contactDir.existsSync()) return;
-
-    // 1) Rename folder if name changed.
-    final desired = _sanitizeFolderName(_pendingName);
-    final currentName = contactDir.path.split(Platform.pathSeparator).last;
-    if (desired.isNotEmpty && desired != currentName) {
-      final parent = contactDir.parent.path;
-      final target = Directory('$parent${Platform.pathSeparator}$desired');
-      if (!target.existsSync()) {
-        await contactDir.rename(target.path);
+    try {
+      await _repository.apply(
+        contactDirPath: widget.contactDirPath,
+        avatarPath: widget.avatarPath,
+        pendingName: _pendingName,
+        pendingAvatarPath: _pendingAvatarPath,
+      );
+    } catch (e) {
+      if (!mounted) {
+        return;
       }
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+      return;
     }
 
-    // 2) Write avatar if changed (copy file into avatar.<ext>).
-    if (_pendingAvatarPath != widget.avatarPath && _pendingAvatarPath != null) {
-      final src = File(_pendingAvatarPath!);
-      if (src.existsSync()) {
-        final ext = src.path.split('.').last.toLowerCase();
-        final safeExt = ext.isEmpty ? 'png' : ext;
-        final destDir = Directory(
-          '${contactDir.parent.path}${Platform.pathSeparator}${_sanitizeFolderName(_pendingName)}',
-        );
-        final dst = File('${destDir.path}${Platform.pathSeparator}avatar.$safeExt');
-        await dst.writeAsBytes(await src.readAsBytes(), flush: true);
-      }
+    if (!mounted) {
+      return;
     }
-
-    if (!mounted) return;
     if (widget.onApplied != null) {
       widget.onApplied!();
       return;
@@ -131,17 +127,9 @@ class _ProfilePageState extends State<ProfilePage> {
 
     return Scaffold(
       appBar: AppBar(
-        leading: IconButton(
-          icon: const Icon(Icons.close),
-          onPressed: widget.onClose ?? () => Navigator.of(context).pop(false),
-        ),
         title: const Text(''),
         actions: [
-          if (canDone)
-            TextButton(
-              onPressed: _apply,
-              child: const Text('Done'),
-            ),
+          if (canDone) TextButton(onPressed: _apply, child: const Text('Done')),
         ],
       ),
       body: ListView(
@@ -150,14 +138,17 @@ class _ProfilePageState extends State<ProfilePage> {
           Center(
             child: Stack(
               children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(24),
+                ClipOval(
                   child: Container(
                     width: 280,
                     height: 280,
                     color: theme.colorScheme.surfaceContainerHighest,
                     child: avatar == null
-                        ? Icon(Icons.person, size: 120, color: theme.colorScheme.onSurfaceVariant)
+                        ? Icon(
+                            Icons.person,
+                            size: 120,
+                            color: theme.colorScheme.onSurfaceVariant,
+                          )
                         : Image.file(File(avatar), fit: BoxFit.cover),
                   ),
                 ),
@@ -186,10 +177,7 @@ class _ProfilePageState extends State<ProfilePage> {
                   _pendingName.isEmpty ? 'Без имени' : _pendingName,
                   style: theme.textTheme.titleMedium,
                 ),
-                IconButton(
-                  icon: const Icon(Icons.edit),
-                  onPressed: _editName,
-                ),
+                IconButton(icon: const Icon(Icons.edit), onPressed: _editName),
               ],
             ),
           ),
@@ -198,7 +186,12 @@ class _ProfilePageState extends State<ProfilePage> {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(widget.lxmfId, style: theme.textTheme.bodySmall?.copyWith(color: theme.hintColor)),
+                Text(
+                  widget.lxmfId,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.hintColor,
+                  ),
+                ),
                 IconButton(
                   tooltip: 'Copy',
                   icon: const Icon(Icons.copy),

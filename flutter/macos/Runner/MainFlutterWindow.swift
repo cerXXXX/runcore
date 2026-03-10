@@ -44,6 +44,9 @@ class MainFlutterWindow: NSWindow {
     titlebarAppearsTransparent = true
     isMovableByWindowBackground = true
     styleMask.insert(.fullSizeContentView)
+
+    // Prevent collapsing the app into an unusable narrow strip.
+    contentMinSize = NSSize(width: 320, height: 680)
   }
 
   private static func findMeContactName(contactsDir: String?) -> String {
