@@ -17,6 +17,7 @@
 .DS_Store
 .xcframework
 .build
+*.rsls
 
 
 # Test binary, built with `go test -c`
