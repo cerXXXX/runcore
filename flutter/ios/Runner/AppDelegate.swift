@@ -54,7 +54,7 @@ import Darwin
 
     private func findMeContactName(contactsDir: String?) -> String {
         guard let contactsDir, !contactsDir.isEmpty else { return "" }
-        let key = "user.runcore.me"
+        let key = "user.me"
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(atPath: contactsDir) else { return "" }
         for name in entries {

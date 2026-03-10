@@ -12,10 +12,10 @@ import (
 	"github.com/svanichkin/go-reticulum/rns"
 )
 
-const messagesFromXattr = "from"
-const messageDateXattr = "date"
-const messageStatusXattr = "status"
-const messageToXattr = "to"
+const messagesFromXattr = "user.from"
+const messageDateXattr = "user.date"
+const messageStatusXattr = "user.status"
+const messageToXattr = "user.to"
 const messageStatusUnseen = "unseen"
 
 // persistInboundMessage stores inbound LXMF messages on disk in a deterministic, app-friendly layout:

@@ -125,7 +125,7 @@ final class RuncoreEngine {
     }
 
     private func hasMeXattr(path: String) -> Bool {
-        let key = "user.runcore.me"
+        let key = "user.me"
         return path.withCString { cPath in
             key.withCString { cKey in
                 let rc = getxattr(cPath, cKey, nil, 0, 0, 0)

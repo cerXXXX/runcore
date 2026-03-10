@@ -70,7 +70,11 @@ class ContactsRepository {
         if (meContactName.isNotEmpty && name == meContactName) {
           continue;
         }
-        out.add(await _readContact(dir.path, name));
+        final contact = await _readContact(dir.path, name);
+        if (contact.destHashHex.isEmpty) {
+          continue;
+        }
+        out.add(contact);
       }
     } catch (_) {
       return const [];
@@ -90,7 +94,8 @@ class ContactsRepository {
     if (!dir.existsSync()) {
       return null;
     }
-    return _readContact(dir.path, normalized);
+    final contact = await _readContact(dir.path, normalized);
+    return contact.destHashHex.isEmpty ? null : contact;
   }
 
   Future<ChatContact?> addContactById(

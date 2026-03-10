@@ -14,13 +14,13 @@ import (
 	"github.com/svanichkin/go-reticulum/rns"
 )
 
-const sendLastAttemptXattr = "user.runcore.send_last_attempt"
-const sendStateXattr = "user.runcore.send_state"
+const sendLastAttemptXattr = "user.send_last_attempt"
+const sendStateXattr = "user.send_state"
 const sendStatePending = "pending"
 const sendErrorsDirName = ".errors"
-const sendServiceXattr = "service"
+const sendServiceXattr = "user.service"
 const sendServiceLXMF = "lxmf"
-const sendFromXattr = "from"
+const sendFromXattr = "user.from"
 
 func (n *Node) startSendWatchdog() {
 	if n == nil {
@@ -276,70 +276,9 @@ func (n *Node) processSendPaths(destHashHex string, paths []string) {
 		n.markSendPending(p)
 	}
 
-	// Prefer sending binary files as attachments; use optional caption.txt as caption if present.
-	var captionPath string
-	for _, p := range paths {
-		if strings.EqualFold(filepath.Base(p), "caption.txt") {
-			captionPath = p
-			break
-		}
-	}
-	attachPaths := make([]string, 0, len(paths))
-	for _, p := range paths {
-		if strings.EqualFold(filepath.Ext(p), ".txt") {
-			continue
-		}
-		attachPaths = append(attachPaths, p)
-	}
-
-	if len(attachPaths) == 0 {
-		// Plain text message(s).
-		for _, p := range paths {
-			if captionPath != "" && p == captionPath {
-				continue
-			}
-			b, err := os.ReadFile(p)
-			if err != nil {
-				continue
-			}
-			content := strings.TrimSpace(string(b))
-			if content == "" {
-				_ = os.Remove(p)
-				continue
-			}
-			title := "msg"
-			base := strings.TrimSuffix(filepath.Base(p), filepath.Ext(p))
-			if strings.Contains(base, " -- ") {
-				if t, _, ok := strings.Cut(base, " -- "); ok {
-					t = strings.TrimSpace(t)
-					if t != "" {
-						title = t
-					}
-				}
-			} else if bt := strings.TrimSpace(base); bt != "" {
-				title = bt
-			}
-			msg, err := n.SendHex(destHashHex, SendOptions{Title: title, Content: content})
-			if err != nil {
-				rns.Logf(rns.LOG_NOTICE, "send folder: failed dest=%s err=%v", destHashHex, err)
-				return
-			}
-			n.moveSentFileToMessages(destHashHex, p, msg, lxmf.MessageSent)
-		}
-		return
-	}
-
-	// Attachment workflow: send each non-txt file; optional single caption.txt applies to all.
-	caption := ""
-	if captionPath != "" {
-		if b, err := os.ReadFile(captionPath); err == nil {
-			caption = strings.TrimSpace(string(b))
-		}
-	}
-	for _, attachPath := range attachPaths {
+	for _, attachPath := range paths {
 		data, err := os.ReadFile(attachPath)
 		if err != nil || len(data) == 0 {
-			_ = os.Remove(attachPath)
 			continue
 		}
 		mime := detectAvatarMime(data)
@@ -349,7 +288,7 @@ func (n *Node) processSendPaths(destHashHex string, paths []string) {
 			rns.Logf(rns.LOG_NOTICE, "send folder: store attachment failed dest=%s err=%v", destHashHex, err)
 			return
 		}
-		content := formatAttachmentMessage(info.HashHex, info.Mime, info.Name, info.Size, caption)
+		content := formatAttachmentMessage(info.HashHex, info.Mime, info.Name, info.Size)
 		msg, err := n.SendHex(destHashHex, SendOptions{Title: "img", Content: content})
 		if err != nil {
 			rns.Logf(rns.LOG_NOTICE, "send folder: send attachment failed dest=%s err=%v", destHashHex, err)
@@ -357,13 +296,9 @@ func (n *Node) processSendPaths(destHashHex string, paths []string) {
 		}
 		n.moveSentFileToMessages(destHashHex, attachPath, msg, lxmf.MessageSent)
 	}
-	if captionPath != "" {
-		// Also move caption into messages as a normal text message file.
-		n.moveSentFileToMessages(destHashHex, captionPath, nil, 0)
-	}
 }
 
-func formatAttachmentMessage(hashHex, mime, name string, size int, caption string) string {
+func formatAttachmentMessage(hashHex, mime, name string, size int) string {
 	var lines []string
 	lines = append(lines, "hash="+strings.TrimSpace(hashHex))
 	if strings.TrimSpace(mime) != "" {
@@ -375,7 +310,6 @@ func formatAttachmentMessage(hashHex, mime, name string, size int, caption strin
 	if size > 0 {
 		lines = append(lines, "size="+strconv.Itoa(size))
 	}
-	lines = append(lines, "caption="+caption)
 	return strings.Join(lines, "\n")
 }
 

@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-const messageStateXattr = "user.runcore.msg_state"
+const messageStateXattr = "user.msg_state"
 
 func (n *Node) setMessageFileStateByMsgID(msgIDHex string, state byte) {
 	if n == nil {

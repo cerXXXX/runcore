@@ -104,6 +104,7 @@ extern char* runcore_config_dir(uint64_t handle);
 extern char* runcore_destination_hash_hex(uint64_t handle);
 extern int32_t runcore_set_display_name(uint64_t handle, char* displayName);
 extern int32_t runcore_restart(uint64_t handle);
+extern int32_t runcore_reset_profile(uint64_t handle);
 extern char* runcore_interface_stats_json(uint64_t handle);
 extern int32_t runcore_set_interface_enabled(uint64_t handle, char* name, int32_t enabled);
 

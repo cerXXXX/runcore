@@ -79,6 +79,20 @@ final class RuncoreEngine {
         return rc
     }
 
+    func resetProfile() -> Int32 {
+        let fm = FileManager.default
+        guard let meDir = meContactDirPath(), !meDir.isEmpty else { return 0 }
+        let lxmfPath = (meDir as NSString).appendingPathComponent("lxmf")
+        if fm.fileExists(atPath: lxmfPath) {
+            do {
+                try fm.removeItem(atPath: lxmfPath)
+            } catch {
+                return 2
+            }
+        }
+        return 0
+    }
+
     func destinationHashHex() -> String {
         if !cachedDestinationHashHex.isEmpty {
             return cachedDestinationHashHex
@@ -127,6 +141,13 @@ final class RuncoreEngine {
         return meContactNameByXattr(in: contactsDirPath, entries: entries)
     }
 
+    private func meContactDirPath() -> String? {
+        guard let contactsDirPath, !contactsDirPath.isEmpty else { return nil }
+        let name = meContactName()
+        guard !name.isEmpty else { return nil }
+        return (contactsDirPath as NSString).appendingPathComponent(name)
+    }
+
     private func systemConfigDir() -> String {
         let fm = FileManager.default
         let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -147,7 +168,7 @@ final class RuncoreEngine {
 
     private func meContactNameByXattr(in contactsDir: String, entries: [String]) -> String {
         let fm = FileManager.default
-        let key = "user.runcore.me"
+        let key = "user.me"
         for name in entries.sorted() {
             let path = (contactsDir as NSString).appendingPathComponent(name)
             var isDir: ObjCBool = false

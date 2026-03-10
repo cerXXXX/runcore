@@ -43,6 +43,9 @@ int32_t runcore_set_display_name(runcore_handle_t handle, const char* display_na
 // Restart the LXMF router (re-announce on restart). Returns 0 on success.
 int32_t runcore_restart(runcore_handle_t handle);
 
+// Recreate the local identity and LXMF delivery destination. Returns 0 on success.
+int32_t runcore_reset_profile(runcore_handle_t handle);
+
 // Free a C string allocated by the library (eg. runcore_interface_stats_json()).
 void runcore_free_string(char* p);
 

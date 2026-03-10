@@ -38,10 +38,9 @@ class _ChatsPageState extends State<ChatsPage> {
   bool _showCompactSidebar = true;
 
   static const double _minMasterWidth = 260;
-  static const double _maxMasterWidth = 340;
+  static const double _maxMasterWidth = 320;
   static const double _minDetailWidth = 320;
   static const double _dividerWidth = 8;
-  static const double _compactCollapseWidth = 820;
 
   Color _selectedItemColor(BuildContext context) {
     final theme = Theme.of(context);
@@ -382,15 +381,16 @@ class _ChatsPageState extends State<ChatsPage> {
 
   double _masterWidthFor(double width) {
     final target = _masterWidth ?? (width * 0.35);
-    final maxAllowed =
-        _maxMasterWidth < (width - _minDetailWidth - _dividerWidth)
-        ? _maxMasterWidth
-        : width - _minDetailWidth - _dividerWidth;
+    final available = width - _minDetailWidth - _dividerWidth;
+    final maxAllowed = available < _maxMasterWidth ? available : _maxMasterWidth;
+    if (maxAllowed <= _minMasterWidth) {
+      return _minMasterWidth;
+    }
     return target.clamp(_minMasterWidth, maxAllowed);
   }
 
   bool _isSplitLayout(double width) {
-    if (width < _compactCollapseWidth) {
+    if (width - _minDetailWidth - _dividerWidth <= _minMasterWidth) {
       return false;
     }
     final master = _masterWidthFor(width);
@@ -437,19 +437,44 @@ class _ChatsPageState extends State<ChatsPage> {
     return 'был давно';
   }
 
-  PreferredSizeWidget _buildCompactAppBar() {
-    if (_isCompactDetailVisible) {
-      return AppBar(
-        elevation: 0,
-        leading: IconButton(
-          tooltip: 'Back',
-          icon: const Icon(Icons.arrow_back),
-          onPressed: _closeCompactDetail,
-        ),
-        title: const Text(''),
-        actions: !_isChatDetailVisible
-            ? null
-            : [
+  Widget _buildCompactToolbar({required bool showCompactSidebar}) {
+    return Material(
+      color: Theme.of(context).scaffoldBackgroundColor,
+      child: SafeArea(
+        bottom: false,
+        child: SizedBox(
+          height: kToolbarHeight,
+          child: Row(
+            children: [
+              if (!showCompactSidebar)
+                IconButton(
+                  tooltip: 'Back',
+                  icon: const Icon(Icons.arrow_back),
+                  onPressed: _closeCompactDetail,
+                ),
+              if (!showCompactSidebar)
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child:
+                          (_isChatDetailVisible ||
+                              _showSelectedContactProfileInRightPane)
+                          ? _buildSelectedContactHeaderCell()
+                          : const SizedBox.shrink(),
+                    ),
+                  ),
+                )
+              else
+                const Spacer(),
+              if (showCompactSidebar)
+                IconButton(
+                  tooltip: 'Search',
+                  icon: const Icon(Icons.search),
+                  onPressed: _openSearch,
+                ),
+              if (!showCompactSidebar && _isChatDetailVisible)
                 _searchToggleButton(
                   onPressed: () => setState(() {
                     _showChatSearch = !_showChatSearch;
@@ -458,34 +483,24 @@ class _ChatsPageState extends State<ChatsPage> {
                     }
                   }),
                 ),
-              ],
-      );
-    }
-    return AppBar(
-      elevation: 0,
-      title: const Text(''),
-      actions: [
-        IconButton(
-          tooltip: 'Search',
-          icon: const Icon(Icons.search),
-          onPressed: _openSearch,
+              const SizedBox(width: 8),
+            ],
+          ),
         ),
-        IconButton(
-          tooltip: 'More',
-          icon: const Icon(Icons.more_vert),
-          onPressed: () {},
-        ),
-      ],
+      ),
     );
   }
 
   Widget _buildDetailPane(RuncorePaths p) {
     if (_showMyProfileInRightPane && _me != null) {
       return ProfilePage(
+        key: ValueKey('me:${_me!.dirPath}'),
         contactDirPath: _me!.dirPath,
         displayName: _me!.name,
         lxmfId: _me!.destHashHex,
         avatarPath: _me!.avatarPath,
+        isSelfProfile: true,
+        allowReset: true,
         onClose: () => setState(() => _showMyProfileInRightPane = false),
         onApplied: () async {
           setState(() => _showMyProfileInRightPane = false);
@@ -495,11 +510,14 @@ class _ChatsPageState extends State<ChatsPage> {
     }
     if (_showSelectedContactProfileInRightPane && _selectedContact != null) {
       return ProfilePage(
+        key: ValueKey('contact:${_selectedContact!.dirPath}'),
         contactDirPath: _selectedContact!.dirPath,
         displayName: _selectedContact!.name,
         lxmfId: _selectedContact!.destHashHex,
         avatarPath: _selectedContact!.avatarPath,
         embedded: true,
+        isSelfProfile: false,
+        allowContactDelete: true,
         onClose: () => setState(() {
           _showSelectedContactProfileInRightPane = false;
         }),
@@ -597,6 +615,68 @@ class _ChatsPageState extends State<ChatsPage> {
     );
   }
 
+  Widget _buildSelectedContactHeaderCell() {
+    final contact = _selectedContact;
+    if (contact == null) {
+      return const SizedBox.shrink();
+    }
+    return Material(
+      color: _showSelectedContactProfileInRightPane
+          ? _selectedItemColor(context)
+          : Colors.transparent,
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: () => setState(() {
+          _showSelectedContactProfileInRightPane =
+              !_showSelectedContactProfileInRightPane;
+          _showMyProfileInRightPane = false;
+          _showChatSearch = false;
+          if (!_showSelectedContactProfileInRightPane) {
+            _chatQuery = '';
+          }
+        }),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              AvatarCircle(
+                radius: 16,
+                avatarPath: contact.avatarPath,
+                name: contact.name,
+                colorSeed: contact.destHashHex,
+              ),
+              const SizedBox(width: 10),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 240),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      contact.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                    const SizedBox(height: 1),
+                    Text(
+                      _lastSeenLabelFor(contact.destHashHex),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildWideSidebar(RuncorePaths p) {
     return ChatsSidebar(
       me: _me,
@@ -661,75 +741,7 @@ class _ChatsPageState extends State<ChatsPage> {
                             padding: const EdgeInsets.symmetric(horizontal: 12),
                             child: Align(
                               alignment: Alignment.centerLeft,
-                              child: Material(
-                                color: _showSelectedContactProfileInRightPane
-                                    ? _selectedItemColor(context)
-                                    : Colors.transparent,
-                                borderRadius: BorderRadius.circular(14),
-                                child: InkWell(
-                                  borderRadius: BorderRadius.circular(14),
-                                  onTap: () => setState(() {
-                                    _showSelectedContactProfileInRightPane =
-                                        !_showSelectedContactProfileInRightPane;
-                                    _showMyProfileInRightPane = false;
-                                    _showChatSearch = false;
-                                    if (!_showSelectedContactProfileInRightPane) {
-                                      _chatQuery = '';
-                                    }
-                                  }),
-                                  child: Padding(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 10,
-                                      vertical: 6,
-                                    ),
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        AvatarCircle(
-                                          radius: 16,
-                                          avatarPath:
-                                              _selectedContact!.avatarPath,
-                                          name: _selectedContact!.name,
-                                          colorSeed:
-                                              _selectedContact!.destHashHex,
-                                        ),
-                                        const SizedBox(width: 10),
-                                        ConstrainedBox(
-                                          constraints: const BoxConstraints(
-                                            maxWidth: 240,
-                                          ),
-                                          child: Column(
-                                            mainAxisSize: MainAxisSize.min,
-                                            crossAxisAlignment:
-                                                CrossAxisAlignment.start,
-                                            children: [
-                                              Text(
-                                                _selectedContact!.name,
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                                style: Theme.of(
-                                                  context,
-                                                ).textTheme.titleSmall,
-                                              ),
-                                              const SizedBox(height: 1),
-                                              Text(
-                                                _lastSeenLabelFor(
-                                                  _selectedContact!.destHashHex,
-                                                ),
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                                style: Theme.of(
-                                                  context,
-                                                ).textTheme.bodySmall,
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ),
+                              child: _buildSelectedContactHeaderCell(),
                             ),
                           )
                         : const SizedBox.shrink(),
@@ -793,6 +805,7 @@ class _ChatsPageState extends State<ChatsPage> {
   }) {
     return Column(
       children: [
+        _buildCompactToolbar(showCompactSidebar: showCompactSidebar),
         if (!showCompactSidebar && _isChatDetailVisible && _showChatSearch)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 6),
@@ -849,24 +862,6 @@ class _ChatsPageState extends State<ChatsPage> {
           final showCompactSidebar =
               !_isCompactDetailVisible || _showCompactSidebar;
           return Scaffold(
-            appBar: showCompactSidebar
-                ? AppBar(
-                    elevation: 0,
-                    title: const Text(''),
-                    actions: [
-                      IconButton(
-                        tooltip: 'Search',
-                        icon: const Icon(Icons.search),
-                        onPressed: _openSearch,
-                      ),
-                      IconButton(
-                        tooltip: 'More',
-                        icon: const Icon(Icons.more_vert),
-                        onPressed: () {},
-                      ),
-                    ],
-                  )
-                : _buildCompactAppBar(),
             body: _buildCompactDetailBody(
               p,
               showCompactSidebar: showCompactSidebar,

@@ -13,6 +13,7 @@ class ProfileRepository {
     required String? avatarPath,
     required String pendingName,
     required String? pendingAvatarPath,
+    required bool isSelfProfile,
   }) async {
     final contactDir = Directory(contactDirPath);
     if (!contactDir.existsSync()) {
@@ -22,11 +23,19 @@ class ProfileRepository {
     final desired = sanitizeFolderName(pendingName);
     var resolvedDir = contactDir;
     if (desired.isNotEmpty) {
-      await _channel.setDisplayName(desired);
       final parent = contactDir.parent.path;
       final target = Directory('$parent${Platform.pathSeparator}$desired');
-      if (target.existsSync()) {
-        resolvedDir = target;
+      if (isSelfProfile) {
+        await _channel.setDisplayName(desired);
+        if (target.existsSync()) {
+          resolvedDir = target;
+        }
+      } else if (contactDir.path != target.path) {
+        if (!target.existsSync()) {
+          resolvedDir = await contactDir.rename(target.path);
+        } else {
+          resolvedDir = target;
+        }
       }
     }
 
@@ -40,6 +49,19 @@ class ProfileRepository {
         );
         await dst.writeAsBytes(await src.readAsBytes(), flush: true);
       }
+    }
+  }
+
+  Future<void> resetProfile() async {
+    await _channel.resetProfile();
+  }
+
+  Future<void> deleteContactLXMF(String contactDirPath) async {
+    final lxmfFile = File(
+      '$contactDirPath${Platform.pathSeparator}lxmf',
+    );
+    if (lxmfFile.existsSync()) {
+      await lxmfFile.delete();
     }
   }
 

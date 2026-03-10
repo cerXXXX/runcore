@@ -57,6 +57,19 @@ class MainFlutterWindow: NSWindow {
             ),
           )
         }
+      case "resetProfile":
+        let rc = engine.resetProfile()
+        if rc == 0 {
+          result(nil)
+        } else {
+          result(
+            FlutterError(
+              code: "reset_profile_failed",
+              message: "resetProfile rc=\(rc)",
+              details: nil,
+            ),
+          )
+        }
       case "pickImagePath":
         Self.pickImagePath(result: result)
       default:
@@ -73,7 +86,16 @@ class MainFlutterWindow: NSWindow {
     styleMask.insert(.fullSizeContentView)
 
     // Prevent collapsing the app into an unusable narrow strip.
-    contentMinSize = NSSize(width: 320, height: 680)
+    let minContentSize = NSSize(width: 480, height: 680)
+    contentMinSize = minContentSize
+    if frame.width < minContentSize.width || frame.height < minContentSize.height {
+      setContentSize(
+        NSSize(
+          width: max(frame.width, minContentSize.width),
+          height: max(frame.height, minContentSize.height)
+        )
+      )
+    }
   }
   private static func pickImagePath(result: @escaping FlutterResult) {
     if !Thread.isMainThread {

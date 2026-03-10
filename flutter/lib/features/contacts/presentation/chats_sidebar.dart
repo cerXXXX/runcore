@@ -58,7 +58,7 @@ class ChatsSidebar extends StatelessWidget {
                   onTap: onOpenMyProfile,
                   contact: me!,
                   subtitle: InterfaceStatusRow(interfaces: interfaces),
-                  trailingLabel: _lastSeenLabelFor(me!.destHashHex),
+                  trailingLabel: '',
                 ),
               ),
             Padding(

@@ -9,7 +9,29 @@ import (
 
 const meLXMFFileName = "lxmf"
 
-const meTagXattr = "user.runcore.me"
+const meTagXattr = "user.me"
+
+func (n *Node) ensureMeContactState(desiredName string) (string, string, error) {
+	dir, finalName, err := n.ensureMeContactDir(desiredName)
+	if err != nil {
+		return "", "", err
+	}
+	value, err := n.readMeLXMFFile(dir)
+	if err == nil && value != "" {
+		return dir, finalName, nil
+	}
+	if err := n.ResetProfile(); err != nil {
+		return dir, finalName, err
+	}
+	dir, finalName, err = n.ensureMeContactDir(finalName)
+	if err != nil {
+		return "", "", err
+	}
+	if err := n.writeMeLXMFFile(dir, n.DestinationHashHex()); err != nil {
+		return dir, finalName, err
+	}
+	return dir, finalName, nil
+}
 
 func (n *Node) ensureMeContactDir(desiredName string) (string, string, error) {
 	if n == nil {
@@ -132,11 +154,20 @@ func (n *Node) ensureMeLXMFFile() error {
 	}
 	dir, err := n.findMeContactDir()
 	if err != nil || dir == "" {
-		return err
+		var ensureErr error
+		dir, _, ensureErr = n.ensureMeContactDir(n.displayName)
+		if ensureErr != nil || dir == "" {
+			if ensureErr != nil {
+				return ensureErr
+			}
+			return err
+		}
 	}
 	target := filepath.Join(dir, meLXMFFileName)
-	if _, err := os.Stat(target); err == nil {
-		return nil
+	if b, err := os.ReadFile(target); err == nil {
+		if strings.TrimSpace(string(b)) != "" {
+			return nil
+		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -144,5 +175,28 @@ func (n *Node) ensureMeLXMFFile() error {
 	if hash == "" {
 		return errors.New("missing destination hash")
 	}
-	return os.WriteFile(target, []byte(hash), 0o644)
+	return n.writeMeLXMFFile(dir, hash)
+}
+
+func (n *Node) readMeLXMFFile(dir string) (string, error) {
+	if strings.TrimSpace(dir) == "" {
+		return "", os.ErrNotExist
+	}
+	b, err := os.ReadFile(filepath.Join(dir, meLXMFFileName))
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(b)), nil
+}
+
+func (n *Node) writeMeLXMFFile(dir, hash string) error {
+	dir = strings.TrimSpace(dir)
+	hash = strings.TrimSpace(hash)
+	if dir == "" {
+		return errors.New("me contact dir is empty")
+	}
+	if hash == "" {
+		return errors.New("missing destination hash")
+	}
+	return os.WriteFile(filepath.Join(dir, meLXMFFileName), []byte(hash), 0o644)
 }

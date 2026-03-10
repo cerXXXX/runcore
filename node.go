@@ -219,20 +219,18 @@ func Start(opts Options) (*Node, error) {
 	}
 	n.router = router
 	n.deliveryDestIn = delivery
-	if dir, finalName, err := n.ensureMeContactDir(n.displayName); err == nil && dir != "" {
+	if dir, finalName, err := n.ensureMeContactState(n.displayName); err == nil && dir != "" {
 		n.displayName = finalName
 		n.meDirMu.Lock()
 		n.meDir = dir
 		n.meDirMu.Unlock()
+	} else if err != nil {
+		rns.Logf(rns.LOG_WARNING, "ensure me contact state: %v", err)
 	}
 
 	n.sendDir = strings.TrimSpace(n.opts.SendDir)
 	n.ensureAnnounceStorageDir()
 	n.loadAnnouncesFromDisk()
-
-	if err := n.ensureMeLXMFFile(); err != nil {
-		rns.Logf(rns.LOG_WARNING, "ensure me lxmf file: %v", err)
-	}
 
 	// Load optional avatar from disk (app-managed).
 	_ = n.loadAvatarFromDisk()
@@ -461,6 +459,47 @@ func (n *Node) Restart() error {
 
 	// Best-effort re-announce on restart.
 	n.AnnounceDeliveryWithReason("restart")
+	return nil
+}
+
+// ResetProfile recreates the local identity and LXMF delivery destination
+// without restarting the Reticulum singleton.
+func (n *Node) ResetProfile() error {
+	if n == nil {
+		return errors.New("node not started")
+	}
+	if strings.TrimSpace(n.opts.Dir) == "" {
+		return errors.New("config dir is empty")
+	}
+
+	identityPath := filepath.Join(n.opts.Dir, "identity")
+	newID, err := rns.NewIdentity()
+	if err != nil {
+		return fmt.Errorf("create identity: %w", err)
+	}
+	if err := newID.Save(identityPath); err != nil {
+		return fmt.Errorf("save identity: %w", err)
+	}
+
+	if dir, err := n.findMeContactDir(); err == nil && dir != "" {
+		_ = os.Remove(filepath.Join(dir, meLXMFFileName))
+	}
+
+	n.identity = newID
+	if err := n.Restart(); err != nil {
+		return err
+	}
+	if dir, finalName, err := n.ensureMeContactDir(n.displayName); err == nil && dir != "" {
+		n.displayName = finalName
+		n.meDirMu.Lock()
+		n.meDir = dir
+		n.meDirMu.Unlock()
+		if err := n.writeMeLXMFFile(dir, n.DestinationHashHex()); err != nil {
+			return err
+		}
+	}
+	_ = UpdateLXMFDisplayName(n.opts.Dir, n.displayName)
+	n.AnnounceDeliveryWithReason("profile_reset")
 	return nil
 }
 
@@ -1040,6 +1079,12 @@ func (n *Node) startStateWatchdog() {
 			// Track rename of contacts/<me> (xattr-tagged) and announce when it changes.
 			if dir, err := n.findMeContactDir(); err == nil && dir != "" {
 				name := filepath.Base(dir)
+				if ensuredDir, ensuredName, ensureErr := n.ensureMeContactState(name); ensureErr == nil && ensuredDir != "" {
+					dir = ensuredDir
+					name = ensuredName
+				} else if ensureErr != nil {
+					rns.Logf(rns.LOG_WARNING, "ensure me contact state: %v", ensureErr)
+				}
 				if st.meDir == "" {
 					st.meDir = dir
 					st.name = name
@@ -1050,9 +1095,20 @@ func (n *Node) startStateWatchdog() {
 					if name != "" && name != n.displayName {
 						n.displayName = name
 						_ = UpdateLXMFDisplayName(n.opts.Dir, n.displayName)
-						_ = n.ensureMeLXMFFile()
 						n.AnnounceDeliveryWithReason("display_name_changed")
 					}
+				}
+			} else {
+				dir, finalName, ensureErr := n.ensureMeContactState(n.displayName)
+				if ensureErr == nil && dir != "" {
+					st.meDir = dir
+					st.name = finalName
+					n.displayName = finalName
+					n.meDirMu.Lock()
+					n.meDir = dir
+					n.meDirMu.Unlock()
+					_ = UpdateLXMFDisplayName(n.opts.Dir, n.displayName)
+					n.AnnounceDeliveryWithReason("me_contact_restored")
 				}
 			}
 
@@ -1169,7 +1225,7 @@ func (n *Node) SetDisplayName(name string) error {
 	if n == nil || n.deliveryDestIn == nil {
 		return errors.New("node not started")
 	}
-	dir, finalName, err := n.ensureMeContactDir(name)
+	dir, finalName, err := n.ensureMeContactState(name)
 	if err != nil {
 		return err
 	}
@@ -1180,7 +1236,6 @@ func (n *Node) SetDisplayName(name string) error {
 		n.meDirMu.Unlock()
 	}
 	_ = UpdateLXMFDisplayName(n.opts.Dir, n.displayName)
-	_ = n.ensureMeLXMFFile()
 	n.AnnounceDeliveryWithReason("display_name_changed")
 	return nil
 }
@@ -1351,7 +1406,7 @@ func (n *Node) avatarStoreDir() string {
 	if dir, err := n.findMeContactDir(); err == nil && dir != "" {
 		return dir
 	}
-	if dir, final, err := n.ensureMeContactDir(n.displayName); err == nil && dir != "" {
+	if dir, final, err := n.ensureMeContactState(n.displayName); err == nil && dir != "" {
 		if final != "" {
 			n.displayName = final
 		}

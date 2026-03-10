@@ -223,6 +223,18 @@ func runcore_restart(handle C.uint64_t) C.int32_t {
 	return 0
 }
 
+//export runcore_reset_profile
+func runcore_reset_profile(handle C.uint64_t) C.int32_t {
+	h := getHandle(handle)
+	if h == nil || h.node == nil {
+		return 1
+	}
+	if err := h.node.ResetProfile(); err != nil {
+		return 2
+	}
+	return 0
+}
+
 //export runcore_interface_stats_json
 func runcore_interface_stats_json(handle C.uint64_t) *C.char {
 	h := getHandle(handle)

@@ -84,6 +84,10 @@ class RuncoreChannel {
     await _channel.invokeMethod<void>('setDisplayName', name);
   }
 
+  Future<void> resetProfile() async {
+    await _channel.invokeMethod<void>('resetProfile');
+  }
+
   Future<List<RuncoreInterfaceStatus>> getInterfaceStats() async {
     final res = await _channel.invokeMethod<String>('getInterfaceStats');
     final raw = (res ?? '').trim();

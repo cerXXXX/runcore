@@ -16,6 +16,9 @@ class ProfilePage extends StatefulWidget {
     this.onClose,
     this.onApplied,
     this.embedded = false,
+    this.allowReset = false,
+    this.allowContactDelete = false,
+    this.isSelfProfile = false,
   });
 
   final String contactDirPath;
@@ -25,6 +28,9 @@ class ProfilePage extends StatefulWidget {
   final VoidCallback? onClose;
   final VoidCallback? onApplied;
   final bool embedded;
+  final bool allowReset;
+  final bool allowContactDelete;
+  final bool isSelfProfile;
 
   @override
   State<ProfilePage> createState() => _ProfilePageState();
@@ -46,6 +52,18 @@ class _ProfilePageState extends State<ProfilePage> {
     super.initState();
     _pendingName = widget.displayName;
     _pendingAvatarPath = widget.avatarPath;
+  }
+
+  @override
+  void didUpdateWidget(covariant ProfilePage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.contactDirPath != widget.contactDirPath ||
+        oldWidget.displayName != widget.displayName ||
+        oldWidget.avatarPath != widget.avatarPath ||
+        oldWidget.lxmfId != widget.lxmfId) {
+      _pendingName = widget.displayName;
+      _pendingAvatarPath = widget.avatarPath;
+    }
   }
 
   Future<void> _pickAvatar() async {
@@ -102,6 +120,7 @@ class _ProfilePageState extends State<ProfilePage> {
         avatarPath: widget.avatarPath,
         pendingName: _pendingName,
         pendingAvatarPath: _pendingAvatarPath,
+        isSelfProfile: widget.isSelfProfile,
       );
     } catch (e) {
       if (!mounted) {
@@ -121,6 +140,89 @@ class _ProfilePageState extends State<ProfilePage> {
     Navigator.of(context).pop(true);
   }
 
+  Future<void> _resetProfile() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Пересоздать профиль'),
+        content: const Text(
+          'Будет удалён текущий LXMF id и создан новый профиль с новой идентичностью.\n\n'
+          'Это действие необратимо. Текущий профиль и его идентификатор восстановить не получится.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Пересоздать'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || confirmed != true) {
+      return;
+    }
+    try {
+      await _repository.resetProfile();
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+      return;
+    }
+    if (!mounted) {
+      return;
+    }
+    if (widget.onApplied != null) {
+      widget.onApplied!();
+      return;
+    }
+    Navigator.of(context).pop(true);
+  }
+
+  Future<void> _deleteContact() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Удалить контакт'),
+        content: const Text('Удалить контакт?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Нет'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Да'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || confirmed != true) {
+      return;
+    }
+    try {
+      await _repository.deleteContactLXMF(widget.contactDirPath);
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+      return;
+    }
+    if (!mounted) {
+      return;
+    }
+    if (widget.onApplied != null) {
+      widget.onApplied!();
+      return;
+    }
+    Navigator.of(context).pop(true);
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -129,6 +231,11 @@ class _ProfilePageState extends State<ProfilePage> {
     final content = ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        if (widget.embedded && canDone)
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton(onPressed: _apply, child: const Text('Done')),
+          ),
         Center(
           child: Stack(
             children: [
@@ -194,6 +301,26 @@ class _ProfilePageState extends State<ProfilePage> {
             ],
           ),
         ),
+        if (widget.allowReset) ...[
+          const SizedBox(height: 24),
+          Center(
+            child: TextButton(
+              onPressed: _resetProfile,
+              style: TextButton.styleFrom(foregroundColor: Colors.red),
+              child: const Text('Пересоздать профиль'),
+            ),
+          ),
+        ],
+        if (widget.allowContactDelete) ...[
+          const SizedBox(height: 24),
+          Center(
+            child: TextButton(
+              onPressed: _deleteContact,
+              style: TextButton.styleFrom(foregroundColor: Colors.red),
+              child: const Text('Удалить контакт'),
+            ),
+          ),
+        ],
       ],
     );
 
