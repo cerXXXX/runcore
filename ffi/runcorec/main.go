@@ -12,6 +12,7 @@ static inline void runcore_log_cb_call(runcore_log_cb cb, void* user_data, int32
 import "C"
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -76,19 +77,25 @@ func runcore_start(contactsDir *C.char, sendDir *C.char, messagesDir *C.char, lo
 		messages = C.GoString(messagesDir)
 	}
 	level := int(loglevel)
+	rootDir := ""
+	if contacts != "" {
+		rootDir = filepath.Dir(strings.TrimSpace(contacts))
+	}
 
 	checkDirReadableWritable(contacts)
 	checkDirReadableWritable(send)
 	checkDirReadableWritable(messages)
+	checkDirReadableWritable(rootDir)
 
 	n, err := runcore.Start(runcore.Options{
-		Dir:         "",
+		Dir:         rootDir,
 		ContactsDir: contacts,
 		SendDir:     send,
 		MessagesDir: messages,
 		LogLevel:    level,
 	})
 	if err != nil {
+		rns.Log(fmt.Sprintf("runcore_start failed: %v", err), rns.LOG_ERROR)
 		return 0
 	}
 

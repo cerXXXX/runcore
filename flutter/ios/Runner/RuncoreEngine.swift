@@ -42,6 +42,7 @@ final class RuncoreEngine {
             let engine = Unmanaged<RuncoreEngine>.fromOpaque(userData).takeUnretainedValue()
             let s = line.map { String(cString: $0) } ?? ""
             DispatchQueue.main.async {
+                NSLog("runcore[iOS][%d] %@", level, s)
                 engine.onLogLine?(level, s)
             }
         }, Unmanaged.passUnretained(self).toOpaque())
@@ -50,6 +51,10 @@ final class RuncoreEngine {
         let contactsDir = (root as NSString).appendingPathComponent("contacts")
         let sendDir = (root as NSString).appendingPathComponent("send")
         let messagesDir = (root as NSString).appendingPathComponent("messages")
+        NSLog("Runcore iOS root=%@", root)
+        NSLog("Runcore iOS contacts=%@", contactsDir)
+        NSLog("Runcore iOS send=%@", sendDir)
+        NSLog("Runcore iOS messages=%@", messagesDir)
         let fm = FileManager.default
         try? fm.createDirectory(atPath: contactsDir, withIntermediateDirectories: true)
         try? fm.createDirectory(atPath: sendDir, withIntermediateDirectories: true)
@@ -66,18 +71,25 @@ final class RuncoreEngine {
                 }
             }
         }
-        guard handle != 0 else { return }
+        guard handle != 0 else {
+            NSLog("Runcore iOS start failed: handle=0")
+            return
+        }
         cachedDestHex = ""
 
         if let ptr = runcore_config_dir(handle) {
             configDirPath = String(cString: ptr)
             runcore_free_string(ptr)
         }
+        NSLog("Runcore iOS configDir=%@", configDirPath ?? "<nil>")
 
         cachedMeFolderName = findMeFolderName() ?? ""
         if !cachedMeFolderName.isEmpty {
             displayName = cachedMeFolderName
         }
+        NSLog("Runcore iOS meFolder=%@", cachedMeFolderName.isEmpty ? "<empty>" : cachedMeFolderName)
+        NSLog("Runcore iOS destHash=%@", destinationHashHex())
+        NSLog("Runcore iOS announcesBytes=%ld", announcesJSON().utf8.count)
     }
 
     func stop() {
@@ -93,20 +105,38 @@ final class RuncoreEngine {
 
     func destinationHashHex() -> String {
         if !cachedDestHex.isEmpty { return cachedDestHex }
-        guard handle != 0 else { return cachedDestHex }
-        guard let contactsDirPath, !contactsDirPath.isEmpty else { return cachedDestHex }
-        let meName = cachedMeFolderName.isEmpty ? (findMeFolderName() ?? displayName) : cachedMeFolderName
-        guard !meName.isEmpty else { return cachedDestHex }
-        let meDir = (contactsDirPath as NSString).appendingPathComponent(meName)
-        let lxmfPath = (meDir as NSString).appendingPathComponent("lxmf")
-        if let s = try? String(contentsOfFile: lxmfPath, encoding: .utf8) {
-            let v = s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            if !v.isEmpty {
-                cachedDestHex = v
-                return v
+        guard handle != 0 else { return "" }
+        guard let ptr = runcore_destination_hash_hex(handle) else { return "" }
+        defer { runcore_free_string(ptr) }
+        let value = String(cString: ptr).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if !value.isEmpty {
+            cachedDestHex = value
+            return value
+        }
+        return ""
+    }
+
+    func meContactName() -> String {
+        guard let contactsDirPath, !contactsDirPath.isEmpty else { return "" }
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(atPath: contactsDirPath) else { return "" }
+
+        let ownDestination = destinationHashHex()
+        if !ownDestination.isEmpty {
+            for name in entries.sorted() {
+                let dirPath = (contactsDirPath as NSString).appendingPathComponent(name)
+                var isDir: ObjCBool = false
+                guard fm.fileExists(atPath: dirPath, isDirectory: &isDir), isDir.boolValue else { continue }
+                let lxmfPath = (dirPath as NSString).appendingPathComponent("lxmf")
+                guard let raw = try? String(contentsOfFile: lxmfPath, encoding: .utf8) else { continue }
+                let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if value == ownDestination {
+                    return name
+                }
             }
         }
-        return cachedDestHex
+
+        return findMeFolderName() ?? ""
     }
 
     private func findMeFolderName() -> String? {

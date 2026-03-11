@@ -231,11 +231,6 @@ class _ProfilePageState extends State<ProfilePage> {
     final content = ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        if (widget.embedded && canDone)
-          Align(
-            alignment: Alignment.centerRight,
-            child: TextButton(onPressed: _apply, child: const Text('Done')),
-          ),
         Center(
           child: Stack(
             children: [
@@ -325,7 +320,30 @@ class _ProfilePageState extends State<ProfilePage> {
     );
 
     if (widget.embedded) {
-      return content;
+      return Column(
+        children: [
+          SafeArea(
+            bottom: false,
+            child: SizedBox(
+              height: kToolbarHeight,
+              child: Row(
+                children: [
+                  const Spacer(),
+                  if (canDone)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: TextButton(
+                        onPressed: _apply,
+                        child: const Text('Done'),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          Expanded(child: content),
+        ],
+      );
     }
 
     return Scaffold(

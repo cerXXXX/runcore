@@ -79,11 +79,12 @@ class MainFlutterWindow: NSWindow {
 
     super.awakeFromNib()
 
-    // Minimal chrome: hide title text + traffic-light buttons.
+    // Keep a normal macOS title bar so app content does not overlap
+    // the traffic-light window controls.
+    title = ""
     titleVisibility = .hidden
-    titlebarAppearsTransparent = true
-    isMovableByWindowBackground = true
-    styleMask.insert(.fullSizeContentView)
+    titlebarAppearsTransparent = false
+    isMovableByWindowBackground = false
 
     // Prevent collapsing the app into an unusable narrow strip.
     let minContentSize = NSSize(width: 480, height: 680)

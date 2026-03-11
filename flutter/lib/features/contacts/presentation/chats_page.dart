@@ -468,12 +468,6 @@ class _ChatsPageState extends State<ChatsPage> {
                 )
               else
                 const Spacer(),
-              if (showCompactSidebar)
-                IconButton(
-                  tooltip: 'Search',
-                  icon: const Icon(Icons.search),
-                  onPressed: _openSearch,
-                ),
               if (!showCompactSidebar && _isChatDetailVisible)
                 _searchToggleButton(
                   onPressed: () => setState(() {
@@ -805,7 +799,8 @@ class _ChatsPageState extends State<ChatsPage> {
   }) {
     return Column(
       children: [
-        _buildCompactToolbar(showCompactSidebar: showCompactSidebar),
+        if (!showCompactSidebar)
+          _buildCompactToolbar(showCompactSidebar: showCompactSidebar),
         if (!showCompactSidebar && _isChatDetailVisible && _showChatSearch)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 6),

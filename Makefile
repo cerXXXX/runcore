@@ -9,6 +9,7 @@ MACOS_SCHEME := Runner
 MACOS_DERIVED_DATA := $(ROOT)/.build/macos
 MACOS_APP := $(MACOS_DERIVED_DATA)/Build/Products/Debug/Runcore.app
 FRAMEWORKS_SCRIPT := $(ROOT)/flutter/native/apple/Frameworks/build.sh
+IOS_SIM_NAME ?= iPhone 17
 
 .DEFAULT_GOAL := macos-run
 
@@ -60,7 +61,8 @@ macos-run: macos-build
 
 ios-run: ios-bootstrap
 	open -a Simulator
-	cd $(FLUTTER_DIR) && flutter run -d ios
+	xcrun simctl boot "$(IOS_SIM_NAME)" || true
+	cd $(FLUTTER_DIR) && flutter run -d "$$(xcrun simctl list devices booted | awk -F '[()]' '/Booted/{print $$2; exit}')"
 
 ios: ios-run
 

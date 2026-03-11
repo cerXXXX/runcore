@@ -46,12 +46,13 @@ class ChatsSidebar extends StatelessWidget {
     return Material(
       color: Theme.of(context).scaffoldBackgroundColor,
       child: SafeArea(
+        top: Platform.isIOS,
         bottom: false,
         child: Column(
           children: [
             if (me != null)
               Padding(
-                padding: const EdgeInsets.only(top: 28),
+                padding: const EdgeInsets.only(top: 8),
                 child: SidebarContactTile(
                   selected: showMyProfileInRightPane,
                   selectedColor: selectedColor,

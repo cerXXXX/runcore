@@ -29,7 +29,7 @@ import Darwin
                         "configDir": self.runcore.configDirPath ?? "",
                     ])
                 case "getMeContactName":
-                    result(self.findMeContactName(contactsDir: self.runcore.contactsDirPath))
+                    result(self.runcore.meContactName())
                 case "getInterfaceStats":
                     result(self.runcore.interfaceStatsJSON())
                 case "getAnnounces":
@@ -51,26 +51,6 @@ import Darwin
 
         return super.application(application, didFinishLaunchingWithOptions: launchOptions)
     }
-
-    private func findMeContactName(contactsDir: String?) -> String {
-        guard let contactsDir, !contactsDir.isEmpty else { return "" }
-        let key = "user.me"
-        let fm = FileManager.default
-        guard let entries = try? fm.contentsOfDirectory(atPath: contactsDir) else { return "" }
-        for name in entries {
-            let p = (contactsDir as NSString).appendingPathComponent(name)
-            var isDir: ObjCBool = false
-            guard fm.fileExists(atPath: p, isDirectory: &isDir), isDir.boolValue else { continue }
-            let has = p.withCString { cPath in
-                key.withCString { cKey in
-                    getxattr(cPath, cKey, nil, 0, 0, 0) >= 0
-                }
-            }
-            if has { return name }
-        }
-        return ""
-    }
-
     private func pickImagePath(result: @escaping FlutterResult) {
         if pendingPickImageResult != nil {
             result(FlutterError(code: "busy", message: "picker already active", details: nil))

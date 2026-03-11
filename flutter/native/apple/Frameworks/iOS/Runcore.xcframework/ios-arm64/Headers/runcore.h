@@ -35,6 +35,10 @@ int32_t runcore_stop(runcore_handle_t handle);
 // The returned pointer must be freed with runcore_free_string().
 char* runcore_config_dir(runcore_handle_t handle);
 
+// Returns the current node LXMF delivery destination hash hex.
+// The returned pointer must be freed with runcore_free_string().
+char* runcore_destination_hash_hex(runcore_handle_t handle);
+
 // Sending is done by writing into the send folder.
 
 // Update display_name used in announce app-data (does not restart the node). Returns 0 on success.
