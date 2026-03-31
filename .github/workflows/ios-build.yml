@@ -8,16 +8,23 @@ on:
 
 jobs:
   build-ios:
-    runs-on: macos-14 # macOS runner с Xcode
+    runs-on: macos-14
     
     steps:
-      - name: Checkout
+      - name: Checkout runcore
         uses: actions/checkout@v4
+        with:
+          path: runcore
+      
+      - name: Clone go-reticulum (sibling directory)
+        run: |
+          cd $GITHUB_WORKSPACE
+          git clone --depth 1 --branch main https://github.com/svanichkin/go-reticulum.git
       
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.21'
+          go-version: '1.25'
       
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -27,37 +34,32 @@ jobs:
       
       - name: Build iOS Runcore.xcframework
         run: |
-          cd flutter/native/apple/Frameworks
+          cd $GITHUB_WORKSPACE/runcore/flutter/native/apple/Frameworks
           ./build.sh ios
         env:
           CGO_ENABLED: 1
       
       - name: Flutter Pub Get
         run: |
-          cd flutter
+          cd $GITHUB_WORKSPACE/runcore/flutter
           flutter pub get
       
       - name: iOS Pod Install
         run: |
-          cd flutter/ios
+          cd $GITHUB_WORKSPACE/runcore/flutter/ios
           pod install
       
       - name: Build Unsigned IPA
         run: |
-          cd flutter
+          cd $GITHUB_WORKSPACE/runcore/flutter
           flutter build ios \
             --no-codesign \
             --release \
-            --build-mode=release \
             --target=lib/main.dart
-        env:
-          CODE_SIGN_IDENTITY: ""
-          CODE_SIGNING_REQUIRED: NO
-          CODE_SIGNING_ALLOWED: NO
       
       - name: Create IPA Archive
         run: |
-          cd flutter/build/ios/iphoneos
+          cd $GITHUB_WORKSPACE/runcore/flutter/build/ios/iphoneos
           mkdir -p Payload
           cp -r Runner.app Payload/
           zip -r ../../../runcore_unsigned.ipa Payload
@@ -66,5 +68,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: runcore-unsigned-ipa
-          path: flutter/runcore_unsigned.ipa
+          path: ${{ github.workspace }}/runcore/flutter/runcore_unsigned.ipa
           retention-days: 7
