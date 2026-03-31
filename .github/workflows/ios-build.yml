@@ -26,11 +26,12 @@ jobs:
         with:
           go-version: '1.23'
       
-      - name: Setup Flutter
+      - name: Setup Flutter (stable - latest)
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24'
           channel: 'stable'
+          # Не указываем версию - берём последнюю стабильную
+          # Это даст Flutter 3.27+ с Dart 3.10+
       
       - name: Build iOS Runcore.xcframework
         run: |
@@ -43,7 +44,6 @@ jobs:
       - name: Fix pubspec.yaml (remove invalid config section)
         run: |
           cd $GITHUB_WORKSPACE/runcore/flutter
-          # Удаляем строки с "config:" и "enable-swift-package-manager:"
           sed -i '' '/^  config:$/d' pubspec.yaml
           sed -i '' '/^    enable-swift-package-manager:/d' pubspec.yaml
       
