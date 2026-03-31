@@ -1,0 +1,70 @@
+name: iOS Build (Unsigned)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-ios:
+    runs-on: macos-14 # macOS runner с Xcode
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+      
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24'
+          channel: 'stable'
+      
+      - name: Build iOS Runcore.xcframework
+        run: |
+          cd flutter/native/apple/Frameworks
+          ./build.sh ios
+        env:
+          CGO_ENABLED: 1
+      
+      - name: Flutter Pub Get
+        run: |
+          cd flutter
+          flutter pub get
+      
+      - name: iOS Pod Install
+        run: |
+          cd flutter/ios
+          pod install
+      
+      - name: Build Unsigned IPA
+        run: |
+          cd flutter
+          flutter build ios \
+            --no-codesign \
+            --release \
+            --build-mode=release \
+            --target=lib/main.dart
+        env:
+          CODE_SIGN_IDENTITY: ""
+          CODE_SIGNING_REQUIRED: NO
+          CODE_SIGNING_ALLOWED: NO
+      
+      - name: Create IPA Archive
+        run: |
+          cd flutter/build/ios/iphoneos
+          mkdir -p Payload
+          cp -r Runner.app Payload/
+          zip -r ../../../runcore_unsigned.ipa Payload
+      
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: runcore-unsigned-ipa
+          path: flutter/runcore_unsigned.ipa
+          retention-days: 7
