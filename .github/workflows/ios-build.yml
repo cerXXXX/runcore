@@ -24,7 +24,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.23'
       
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -35,9 +35,17 @@ jobs:
       - name: Build iOS Runcore.xcframework
         run: |
           cd $GITHUB_WORKSPACE/runcore/flutter/native/apple/Frameworks
+          chmod +x build.sh
           ./build.sh ios
         env:
           CGO_ENABLED: 1
+      
+      - name: Fix pubspec.yaml (remove invalid config section)
+        run: |
+          cd $GITHUB_WORKSPACE/runcore/flutter
+          # Удаляем строки с "config:" и "enable-swift-package-manager:"
+          sed -i '' '/^  config:$/d' pubspec.yaml
+          sed -i '' '/^    enable-swift-package-manager:/d' pubspec.yaml
       
       - name: Flutter Pub Get
         run: |
